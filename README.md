@@ -1,2 +1,2 @@
-# Global_ocean_18S_analysis
+# Global_ocean_genomic_analysis
 scripts associated with analyzing Malaspina and Tara metabarcoding data
