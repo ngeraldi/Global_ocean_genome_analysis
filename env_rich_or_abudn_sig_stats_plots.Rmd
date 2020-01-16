@@ -1,0 +1,992 @@
+---
+title: "biomass_compare"
+author: "Nathan R. Geraldi"
+date: "April 6, 2019"
+output: github_document
+---
+
+set table options
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## libraries
+```{r libraries, message=FALSE, warning=FALSE}
+library(RColorBrewer)
+library(tidyverse) 
+library(broom)
+#library(edgeR)
+library(corrplot)
+library(lme4)
+library(lmerTest)
+library(scales)
+library(ggplot2)
+
+library(ggpubr)
+#library(spatialreg)
+
+#  install.packages("devtools")
+#  devtools::install_github("grunwaldlab/metacoder")
+
+```
+
+## functions
+```{r functions, message=FALSE, warning=FALSE}
+# function to remove rows with n number of NA's
+delete.na <- function(DF, n=0) {
+  DF[rowSums(is.na(DF)) <= n,]
+}
+
+# Specify alpha as a percentage:
+colorRampAlpha <- function(..., n, alpha) {
+   colors <- colorRampPalette(...)(n)
+   paste(colors, sprintf("%x", ceiling(255*alpha)), sep="")
+}
+
+# for good tick mark labels for ggplot
+base_breaks <- function(n = 10){
+    function(x) {
+        axisTicks(log10(range(x, na.rm = TRUE)), log = TRUE, n = n)
+    }
+}
+## to remove attribures from data
+
+one_entry <- function(x) {
+  for (i in length(x)) attr(x[[i]], "names") <- NULL
+  return(x)
+}
+```
+
+
+## define universal variables
+```{r define_universal}
+stud_pat<-"Dammam"  # matches study specific title from pipe (begining of files).
+dir<-"/Users/geraldn/Dropbox/"
+out_file<-"Documents/KAUST/eDNA/R/pipe_summary"
+# export  to project folder
+export_file<-"Documents/KAUST/eDNA/R/csv/"
+
+```
+
+## import taxa t
+```{r taxa_table}
+## taxa conversions to make data comparable
+taxa_DNA_net<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/taxa_table.xlsx", sheet=1)
+taxa_net_DNA<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/taxa_table.xlsx", sheet=2)
+```
+
+
+## import geo
+```{r taxa_table}
+# get ocean data  - used in "tidy 18s"
+geo<-read.table("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/Global_layers_genome.csv", sep=",",header=T)
+#  names(geo)
+geo2<- geo %>% 
+  dplyr::select(Latitude:ocean) %>% 
+  distinct(Latitude,Latitude, .keep_all = T)
+
+amplicon_geo<-read.table("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/Global_layers_oct18.csv", sep=",",header=T)
+  
+amplicon_geo <- amplicon_geo %>% 
+    filter(!duplicated(Latitude,Longitude))
+
+```
+
+
+## metagenome
+```{r metagenome}
+
+# genome data from DMAP        
+dat_genome<-data.table::fread(file = '/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/DMAP_biomass_apr19.csv', sep = ',', header = TRUE)
+##   add column differentiat malaspina profile and deep
+dat_genome1<- dat_genome %>%   # names(dat_genome)      
+  mutate(pid=forcats::fct_recode(pid, "PID_50" ="pid50","PID_70" ="pid70","PID_90" ="pid90" )) %>% 
+  mutate(Depth = ifelse(Cruise == "TARA", Depth.env, Depth)) %>% 
+  group_by_at(vars(unique_ID:pid, Latitude,Longitude,Depth,phylum)) %>% # was sp_num in stats_source
+  summarize(reads=sum(reads)) %>% 
+  ungroup() %>% 
+  group_by_at(vars(unique_ID:pid)) %>% 
+  mutate(reads_sample=sum(reads)) %>% 
+  ungroup() %>% 
+  mutate(reads_percent=reads/reads_sample) %>% 
+  mutate(reads_percent=reads_percent*100) %>%
+  dplyr::rename(Phylum=phylum) 
+  # unique(dat_genome1$pid)
+  ## get oceans, but need to remove some samples without lat/lon
+ dat_genome_na<- dat_genome1 %>% # remove then bind back in after join-erro with na's
+    filter(is.na(Latitude))
+
+ dat_genome2<- dat_genome1 %>% # names(dat_genome2)
+    filter(complete.cases(Latitude)) %>% 
+    fuzzyjoin::geo_left_join(geo2, max_dist = 0.1)  %>% #  to get oceans, dist in miles
+    dplyr::select(-Latitude.y,  -Longitude.y) %>% 
+    dplyr::rename(Latitude=Latitude.x , Longitude=Longitude.x)  %>% 
+    mutate(ocean=as.character(ocean)) %>%  #  unique(dat_genome2$ocean)
+    mutate(ocean=replace(ocean, ocean=="Antarctic","Southern Ocean")) %>% 
+    mutate(Latitude_abs=abs(Latitude)) %>% 
+    mutate(Latitude_cat=cut(Latitude_abs, breaks=c(-Inf,23.5,35, Inf), 
+                        labels=c("Tropical","Subtropical","Temperate"))) %>% 
+   #bind_rows(dat_genome_na) %>% 
+   # remove NaN- only for samples with no hits
+   filter(!reads_percent=="NaN") 
+
+ #########
+  #       get filter catagories
+filcat<-data.frame(unique(dat_genome2$filter_size))
+colnames(filcat)[1] <- "filter_size"
+filcat$filter_size_cat<-c("0.2-3","1-20","1-20","0.2-3","0.2-3","1-20","0.1-0.22","0.2-3","0.2-3","0.2-3")
+dat_genome2<-left_join(dat_genome2, filcat, by="filter_size")   #  unique(dat_genome2$filter_size_cat)
+##  get depth catagories
+dat_genome2$Depth_cat <- cut(dat_genome2$Depth, breaks=c(-Inf,11, 200, 1000, 2000, 3910, Inf), 
+                      labels=c("<10m","10-200m","200-1000m","1000-2000m","2000-3910m","3995-4020m"))
+##
+## limit to "good data"
+dat_genome3<- dat_genome2 %>%   # names(dat_genome2)
+  filter(gene_domain=="ec4")  %>%   # unique(dat_genome2$gene_domain)
+   # limit to target DMAP filter
+  filter(pid=="PID_70") %>%  # 
+    ###
+    filter(filter_size_cat=="0.2-3" ) 
+  
+dat_genome3<-data.frame(dat_genome3)
+
+# get reads per phylum   names(dat_genome3)
+dat_genome4 <- dat_genome3 %>% 
+  dplyr::select(-Phylum,-reads,-reads_percent,-number_of_) %>% 
+  distinct()
+  #filter(!duplicated(unique_ID,ID.x,Sample,Station,Cruise,area,filter_size,Latitude,Longitude,Depth))
+
+
+```
+
+
+## genome tidy
+```{r tidy}
+# split up by areas and standardize
+
+sdat <-dat_genome4 %>% 
+  filter(Cruise=="Malaspina" & area=="deep") 
+sdat$sDepth<-scale(sdat$Depth)
+sdat$sLand_Dist<-scale(sdat$land_dist)
+sdat$sLatitude<-scale(sdat$Latitude)
+sdat$sLatitude_abs<-scale(sdat$Latitude_abs)
+sdat$sPresent.Surface.Temperature.Mean<-scale(sdat$Present.Surface.Temperature.Mean)
+sdat$sPresent.Surface.Temperature.Range<-scale(sdat$Present.Surface.Temperature.Range)
+sdat$sPresent.Surface.Primary.productivity.Mean<-scale(sdat$Present.Surface.Primary.productivity.Mean)
+sdat$sPresent.Surface.Primary.productivity.Range<-scale(sdat$Present.Surface.Primary.productivity.Range)
+sdat$sPop_in_100km.Mean<-scale(sdat$Pop_in_100km)
+sdat$sPop_in_1000km<-scale(sdat$Pop_in_1000km)
+sdat$sOHI_2013<-scale(sdat$OHI_2013)
+mal_deep_gen_att<-sdat
+sdat<-lapply(sdat, FUN=one_entry)
+mal_deep_gen<-data.frame(sdat)
+
+mes<- mal_deep_gen %>%  # names(mes)
+    mutate(dist_bottom= abs(global_depth)-Depth) %>% 
+  select(dist_bottom,global_depth,Depth)
+#  summary(mes$dist_bottom)
+
+
+sdat <-dat_genome4 %>% 
+  filter(Cruise=="Malaspina" & area=="prof")
+sdat$sDepth<-scale(sdat$Depth)
+sdat$sLand_Dist<-scale(sdat$land_dist)
+sdat$sLatitude<-scale(sdat$Latitude)
+sdat$sLatitude_abs<-scale(sdat$Latitude_abs)
+sdat$sPresent.Surface.Temperature.Mean<-scale(sdat$Present.Surface.Temperature.Mean)
+sdat$sPresent.Surface.Temperature.Range<-scale(sdat$Present.Surface.Temperature.Range)
+sdat$sPresent.Surface.Primary.productivity.Mean<-scale(sdat$Present.Surface.Primary.productivity.Mean)
+sdat$sPresent.Surface.Primary.productivity.Range<-scale(sdat$Present.Surface.Primary.productivity.Range)
+sdat$sPop_in_100km.Mean<-scale(sdat$Pop_in_100km)
+sdat$sPop_in_1000km<-scale(sdat$Pop_in_1000km)
+sdat$sOHI_2013<-scale(sdat$OHI_2013)
+mal_prof_gen_att<-sdat
+sdat<-lapply(sdat, FUN=one_entry)
+mal_prof_gen<-data.frame(sdat)  #   summary(mal_prof_gen$Depth)
+mes<- mal_prof_gen_att %>%  # names(mes)
+     arrange(Station,-Depth) %>% 
+    filter(!Station==98, !Station==102, !Station==108, !Station==110, !Station==115, !Station==2 , !Station==25) %>% 
+      filter(!duplicated(Station)) %>% 
+    mutate(dist_bottom= abs(global_depth)-Depth) %>% 
+  select(dist_bottom,global_depth,Depth) %>% 
+  filter(Depth>2000)
+#  summary(mes$dist_bottom)
+
+sdat <-dat_genome4 %>% 
+  filter(Cruise=="TARA" )
+sdat$sDepth<-scale(sdat$Depth)
+sdat$sLand_Dist<-scale(sdat$land_dist)
+sdat$sLatitude<-scale(sdat$Latitude)
+sdat$sLatitude_abs<-scale(sdat$Latitude_abs)
+sdat$sPresent.Surface.Temperature.Mean<-scale(sdat$Present.Surface.Temperature.Mean)
+sdat$sPresent.Surface.Temperature.Range<-scale(sdat$Present.Surface.Temperature.Range)
+sdat$sPresent.Surface.Primary.productivity.Mean<-scale(sdat$Present.Surface.Primary.productivity.Mean)
+sdat$sPresent.Surface.Primary.productivity.Range<-scale(sdat$Present.Surface.Primary.productivity.Range)
+sdat$sPop_in_100km.Mean<-scale(sdat$Pop_in_100km)
+sdat$sPop_in_1000km<-scale(sdat$Pop_in_1000km)
+sdat$sOHI_2013<-scale(sdat$OHI_2013)
+TARA_gen_att<-sdat
+sdat<-lapply(sdat, FUN=one_entry)
+TARA_gen<-data.frame(sdat)   # hist(TARA_gen$Depth)
+
+## check distribution
+x<-sdat$reads_sample    # sqrt best    profile only -raw
+hist(x)
+hist(sqrt(x))
+hist(log(x))
+```
+
+
+## ampli TARA tidy
+```{r TARA t}
+source("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/R/projects/Global_ocean_genome_analysis/amplicon_stats_tara_source.R")
+## if memory error -  close r, then run the following in terminal then open R -- export R_MAX_VSIZE=32000000000
+
+tdat_orignal<- stat_rare[["read_low_sp"]]  ## names(sdat)   names(stat_raw)   names(stat_rare[["read_low_sp"]])
+###scale scale=TRUE divides by the standanrd deviation default does both center and scale
+tdat_orignal<-tdat_orignal[tdat_orignal$filter_size_cat==".5-5",]  ##   !!!!! to match mal and match stats
+sdat<-tdat_orignal
+
+sdat$sTemp.<-scale(sdat$Temp.)
+sdat$sDepth<-scale(sdat$Depth)
+sdat$sLand_Dist<-scale(sdat$land_dist)
+sdat$sLatitude<-scale(sdat$Latitude)
+sdat$sChlorophyll<-scale(sdat$Chlorophyll)
+sdat$sLatitude_abs<-scale(sdat$Latitude_abs)
+sdat$sPresent.Surface.Temperature.Mean<-scale(sdat$Present.Surface.Temperature.Mean)
+sdat$sPresent.Surface.Temperature.Range<-scale(sdat$Present.Surface.Temperature.Range)
+sdat$sPresent.Surface.Primary.productivity.Mean<-scale(sdat$Present.Surface.Primary.productivity.Mean)
+sdat$sPresent.Surface.Primary.productivity.Range<-scale(sdat$Present.Surface.Primary.productivity.Range)
+sdat$sPop_in_100km.Mean<-scale(sdat$Pop_in_100km)
+sdat$sPop_in_1000km<-scale(sdat$Pop_in_1000km)
+sdat$sOHI_2013<-scale(sdat$OHI_2013)
+tdat_att<-sdat
+
+tdat<-sdat %>%   # names(tdat)
+  fuzzyjoin::geo_left_join(amplicon_geo[,c(6,7,20:22)], max_dist = 1) %>% 
+  dplyr::rename(Latitude=Latitude.x, Longitude=Longitude.x) %>% 
+  dplyr::select(-Latitude.y, -Longitude.y) %>% 
+  mutate(lohghurst_biome=as.character(lohghurst_biome))  %>% 
+  mutate(lohghurst_biome=if_else(TStation==11, "MEDI" ,lohghurst_biome))
+
+```
+
+
+## ampli mal tidy
+```{r mal t}
+source("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/R/projects/Global_ocean_genome_analysis/amplicon_stats_mal_source.R")
+#  1- "raw.otu.DNA_read_low"  2- "raw.species.DNA_read_low" 3- "rare.otu.DNA_read_low"   4- "rare.species.DNA_read_low"
+########################################################################################################
+
+mal<-stat[["rare.species.DNA_read_low"]]  ## names(stat[[1]])   names(stat)    names(mal)
+
+mal<-mal %>% 
+  dplyr::select(-lohghurst_biome) %>% 
+  filter(complete.cases(Latitude))  %>% 
+  fuzzyjoin::geo_left_join(amplicon_geo[,c(6,7,20:22)], max_dist = 1)  %>% 
+  dplyr::rename(Latitude=Latitude.x, Longitude=Longitude.x) %>% 
+  dplyr::select(-Latitude.y, -Longitude.y)
+
+##  surf mal
+sdat <- mal   %>% 
+ filter(grepl("M",Sample.ID))
+
+sdat <- mal
+sdat$sTemp.<-scale(sdat$Temp.)
+sdat$sDepth<-scale(sdat$Depth)
+sdat$sLand_Dist<-scale(sdat$land_dist)
+sdat$sLatitude<-scale(sdat$Latitude)
+#sdat$sChlorophyll<-scale(sdat$Chlorophyll)
+sdat$sLatitude_abs<-scale(sdat$Latitude_abs)
+sdat$sPresent.Surface.Temperature.Mean<-scale(sdat$Present.Surface.Temperature.Mean)
+sdat$sPresent.Surface.Temperature.Range<-scale(sdat$Present.Surface.Temperature.Range)
+sdat$sPresent.Surface.Primary.productivity.Mean<-scale(sdat$Present.Surface.Primary.productivity.Mean)
+sdat$sPresent.Surface.Primary.productivity.Range<-scale(sdat$Present.Surface.Primary.productivity.Range)
+sdat$sPop_in_100km.Mean<-scale(sdat$Pop_in_100km)
+sdat$sPop_in_1000km<-scale(sdat$Pop_in_1000km)
+sdat$sOHI_2013<-scale(sdat$OHI_2013)
+
+msurf<-sdat
+
+##   prof
+sdat <- mal  %>% 
+  filter(!(grepl("deep",Sample.ID) | grepl("M",Sample.ID)))
+
+sdat$sTemp.<-scale(sdat$Temp.)
+sdat$sDepth<-scale(sdat$Depth)
+sdat$sLand_Dist<-scale(sdat$land_dist)
+sdat$sLatitude<-scale(sdat$Latitude)
+#sdat$sChlorophyll<-scale(sdat$Chlorophyll)
+sdat$sLatitude_abs<-scale(sdat$Latitude_abs)
+sdat$sPresent.Surface.Temperature.Mean<-scale(sdat$Present.Surface.Temperature.Mean)
+sdat$sPresent.Surface.Temperature.Range<-scale(sdat$Present.Surface.Temperature.Range)
+sdat$sPresent.Surface.Primary.productivity.Mean<-scale(sdat$Present.Surface.Primary.productivity.Mean)
+sdat$sPresent.Surface.Primary.productivity.Range<-scale(sdat$Present.Surface.Primary.productivity.Range)
+sdat$sPop_in_100km.Mean<-scale(sdat$Pop_in_100km)
+sdat$sPop_in_1000km<-scale(sdat$Pop_in_1000km)
+sdat$sOHI_2013<-scale(sdat$OHI_2013)
+
+mprof<-sdat
+
+### RNA
+sdat<-stat[["rare.species.RNA_read_low"]]  ## names(stat[[1]])   names(stat)    names(sdat)
+
+sdat<-sdat %>% 
+  dplyr::select(-lohghurst_biome) %>% 
+  filter(complete.cases(Latitude))  %>% 
+  fuzzyjoin::geo_left_join(amplicon_geo[,c(6,7,20:22)], max_dist = 1)  %>% 
+  dplyr::rename(Latitude=Latitude.x, Longitude=Longitude.x) %>% 
+  dplyr::select(-Latitude.y, -Longitude.y)
+
+###scale scale=TRUE divides by the standanrd deviation default does both center and scale
+sdat$sTemp.<-scale(sdat$Temp.)
+sdat$sDepth<-scale(sdat$Depth)
+sdat$sLand_Dist<-scale(sdat$land_dist)
+sdat$sLatitude<-scale(sdat$Latitude)
+#sdat$sChlorophyll<-scale(sdat$Chlorophyll)
+sdat$sLatitude_abs<-scale(sdat$Latitude_abs)
+sdat$sPresent.Surface.Temperature.Mean<-scale(sdat$Present.Surface.Temperature.Mean)
+sdat$sPresent.Surface.Temperature.Range<-scale(sdat$Present.Surface.Temperature.Range)
+sdat$sPresent.Surface.Primary.productivity.Mean<-scale(sdat$Present.Surface.Primary.productivity.Mean)
+sdat$sPresent.Surface.Primary.productivity.Range<-scale(sdat$Present.Surface.Primary.productivity.Range)
+sdat$sPop_in_100km.Mean<-scale(sdat$Pop_in_100km)
+sdat$sPop_in_1000km<-scale(sdat$Pop_in_1000km)
+sdat$sOHI_2013<-scale(sdat$OHI_2013)
+
+mRNA<-sdat
+
+##   deep
+mdeep <- mal  %>% 
+  filter(grepl("deep",Sample.ID))
+
+```
+
+
+## get all lognhurst
+```{r longhurst}
+lhb<-c(as.character(dat_genome4$lohghurst_biome), as.character(amplicon_geo$lohghurst_biome))
+lhb<-sort(unique(as.character(lhb)))
+
+```
+
+
+## plot sig TARA genom
+```{r plot TARA}
+
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30')
+cc4<-c('#543005','#dfc27d','#80cdc1','black')
+c1<-c('#543005')
+lab<-c("0.5-5" , "5-20", "20-200","180-2000" )
+n<-29
+cc_n<- colorRampPalette(col=c("#543005", "#fee08b", "#003c30"))(n)
+shap<-rep(1:6, length.out=n)
+## for scale_descrete
+fac_col <-setNames( cc4, lab )
+
+####    TARA  ##
+gdat <- TARA_gen  %>% 
+    mutate(resp=log(reads_sample)) %>%  # hist(sdat$resp) names(gdat)
+ mutate(lohghurst_biome=factor(lohghurst_biome,levels=levels(dat_genome4$lohghurst_biome))) 
+gdat_att<-TARA_gen_att
+
+## back trans y axis and get new tics and clean numbers
+aa=data.frame(x=c(1:4))
+aa<- aa %>% 
+  mutate(real_num=x) %>% 
+  mutate(lab=(exp(x))) %>% 
+  mutate(nlab=c(1,10,40,80)) %>% 
+  mutate(ntic=log(nlab))
+# length(unique(as.character(gdat$lohghurst_biome)))
+#################   plot depth
+# from model
+int=1.521
+slop=-0.459
+## unscale x axis
+hp<-as.vector(DMwR::unscale(c(0:3), gdat_att$sDepth)) # numbers from original plot
+hp2<-c(10,300,600,900)
+hp2_lab<-hp2 # c("5","500","10,000,000")
+#hp3<-log(hp2+1)
+hp4<- (hp2 - mean(gdat$Depth, na.rm=T))/ sd(gdat$Depth, na.rm=T) 
+
+tp_depth <- ggplot(gdat, aes(x=sDepth, y=resp, color=lohghurst_biome, shape=lohghurst_biome)) + # , fill=filter_size_cat
+  geom_point() +
+  #geom_smooth(method = "gam") + # gam or loess
+  geom_abline(intercept = int, slope = slop) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Prevalence", x = "Depth (m)")  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_x_continuous(breaks = hp4, labels = hp2_lab) +
+  scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+    theme(legend.position = "none")  
+
+##################   plot temp mean
+# from model
+int=1.521
+slop=-0.298
+## unscale x axis
+hp<-as.vector(DMwR::unscale(c(-4,-2.5,0.5,1), gdat_att$sPresent.Surface.Temperature.Mean)) # numbers from original plot
+hp2<-c(1,10,20,30)
+hp2_lab<-hp2 
+hp4<- (hp2 - mean(gdat$Present.Surface.Temperature.Mean, na.rm=T))/ sd(gdat$Present.Surface.Temperature.Mean, na.rm=T) 
+
+tp_tempm <- ggplot(gdat, aes(x=sPresent.Surface.Temperature.Mean, y=resp, color=lohghurst_biome, shape=lohghurst_biome)) + # , fill=filter_size_cat
+  geom_point() +
+  #geom_smooth(method = "gam") + # gam or loess
+  geom_abline(intercept = int, slope = slop) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Sequence abundance (per million sequences)", x = "Surface temperatrue mean (°C)")  + 
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_x_continuous(breaks = hp4, labels = hp2_lab) +
+  scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+    theme(legend.position = "none")  
+
+########################## tara latitude
+#latlab<-c(-50,-25,0,25,50)
+latlab<-c(-45,-20,0,20,45)
+gdat$resp<-gdat$reads_sample
+#gdat<-gdat[gdat$resp<50,]
+
+t_gen_lat<-  ggplot(gdat, aes(x=Latitude, y=resp)) + # , fill=filter_size_cat
+      geom_smooth(method = "loess", se=T, col="black") + # gam or loess
+  geom_point(aes(color=lohghurst_biome, shape=lohghurst_biome)) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Prevalence", x = "Latitude")  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_y_continuous(limits=c(0,50)) +
+  scale_x_continuous(breaks = latlab, labels = latlab, limits=c(-50,50)) +
+    theme(legend.position = "none") +
+    coord_flip()
+```
+
+
+## genome deep plot
+```{r mal deep p}
+####    mal deep latitude  ##
+gdat <- mal_deep_gen  %>% 
+    mutate(resp=reads_sample) %>%  # hist(sdat$resp) names(gdat)
+ mutate(lohghurst_biome=factor(lohghurst_biome,levels=levels(dat_genome4$lohghurst_biome))) 
+
+aa=data.frame(x=c(1:4))
+aa<- aa %>% 
+  mutate(real_num=x) %>% 
+  mutate(lab=(exp(x))) %>% 
+  mutate(nlab=c(1,10,40,80)) %>% 
+  mutate(ntic=log(nlab))
+
+latlab<-c(-45,-20,0,20,45)
+
+maldeep_gen_lat<-  ggplot(gdat, aes(x=Latitude, y=resp)) + # , fill=filter_size_cat
+      geom_smooth(method = "loess", se=T, col="black") + # gam or loess
+  geom_point(aes(color=lohghurst_biome, shape=lohghurst_biome)) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Prevalence", x = "Latitude")  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  #scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+  scale_x_continuous(breaks = latlab, labels = latlab, limits=c(-50,50)) +
+    theme(legend.position = "none") +
+    coord_flip()
+
+```
+ 
+
+
+## ampli TARA plot
+```{r TARA p}
+gdat <- tdat  %>% 
+    mutate(resp=log(rich)) %>%  # hist(sdat$resp) names(gdat)  unique(tdat$lohghurst_biome)
+ mutate(lohghurst_biome=factor(lohghurst_biome,levels=levels(dat_genome4$lohghurst_biome))) 
+gdat_att<-tdat_att
+## back trans y axis and get new tics and clean numbers
+aa=data.frame(x=c(2:5))
+aa<- aa %>% 
+  mutate(real_num=x) %>% 
+  mutate(lab=(exp(x))) %>% 
+  mutate(nlab=c(10,20,60,120)) %>% 
+  mutate(ntic=log(nlab))
+
+### for  pp mean
+# from model
+int<- 4.02
+slop<- 0.370
+## unscale x axis
+hp<-as.vector(DMwR::unscale(c(0:4), gdat_att$sPresent.Surface.Primary.productivity.Mean)) # numbers from original plot
+hp2<-c(0.005,0.015,.025)
+hp2_lab<-hp2 # c("5","500","10,000,000")
+#hp3<-log(hp2+1)
+hp4<- (hp2 - mean(gdat$Present.Surface.Primary.productivity.Mean, na.rm=T))/ sd(gdat$Present.Surface.Primary.productivity.Mean, na.rm=T) 
+
+t_amp_ppm <- ggplot(gdat, aes(x=sPresent.Surface.Primary.productivity.Mean, y=resp, color=lohghurst_biome, shape=lohghurst_biome)) + # , fill=filter_size_cat
+  geom_point() +
+  #geom_smooth(method = "gam") + # gam or loess
+  geom_abline(intercept = int, slope = slop) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Richness", x = bquote('Surface primary productivity mean (g*'~m^-3*"*"~d^-1*')')  )  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_x_continuous(breaks = hp4, labels = hp2_lab) +
+  scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+    theme(legend.position = "none")  
+
+### for pp range
+# from model
+int<-  4.02
+slop<-  -0.227
+## unscale x axis
+hp<-as.vector(DMwR::unscale(c(-1:3), gdat_att$sPresent.Surface.Primary.productivity.Range)) # numbers from original plot
+hp2<-c(0.01,0.02,0.03,0.04)
+hp2_lab<-hp2 # c("5","500","10,000,000")
+#hp3<-log(hp2+1)
+hp4<- (hp2 - mean(gdat$Present.Surface.Primary.productivity.Range, na.rm=T))/ sd(gdat$Present.Surface.Primary.productivity.Range, na.rm=T) 
+
+t_amp_ppr <- ggplot(gdat, aes(x=sDepth, y=resp, color=lohghurst_biome, shape=lohghurst_biome)) + # , fill=filter_size_cat
+  geom_point() +
+  #geom_smooth(method = "gam") + # gam or loess
+  geom_abline(intercept = int, slope = slop) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Richness", x = bquote('Surface primary productivity range (g*'~m^-3*"*"~d^-1*')'))  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_x_continuous(breaks = hp4, labels = hp2_lab) +
+  scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+    theme(legend.position = "none")  
+
+# tara latidute
+gdat$resp<-gdat$rich
+latlab<-c(-45,-20,0,20,45)
+xxlab<-c(20,80,140)
+
+t_amp_lat<-  ggplot(gdat, aes(x=Latitude, y=resp)) + # , fill=filter_size_cat
+      geom_smooth(method = "loess", se=T, col="black") + # gam or loess
+  geom_point(aes(color=lohghurst_biome, shape=lohghurst_biome)) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Richness", x = "Latitude")  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_y_continuous(breaks = xxlab, labels = xxlab) +
+  scale_x_continuous(breaks = latlab, labels = latlab, limits=c(-50,50)) +
+    theme(legend.position = "none") +
+    coord_flip()
+```
+
+
+## ampli mal surf plot
+```{r mal plot}
+gdat <- msurf  %>% 
+    mutate(resp=log(rich)) %>%  # hist(sdat$resp) names(gdat)  unique(tdat$lohghurst_biome)
+ mutate(lohghurst_biome=factor(lohghurst_biome,levels=levels(dat_genome4$lohghurst_biome))) 
+
+## back trans y axis and get new tics and clean numbers
+aa=data.frame(x=c(0:3))
+aa<- aa %>% 
+  mutate(real_num=x) %>% 
+  mutate(lab=(exp(x))) %>% 
+  mutate(nlab=c(2,4,8,20)) %>% 
+  mutate(ntic=log(nlab))
+
+### for  sst mean
+# from model
+int<- 1.81
+slop<- 0.354
+## unscale x axis
+hp<-as.vector(DMwR::unscale(c(-2:1), gdat$sPresent.Surface.Temperature.Mean)) # numbers from original plot
+hp2<-c(15,20,25,30)
+hp2_lab<-hp2 # c("5","500","10,000,000")
+#hp3<-log(hp2+1)
+hp4<- (hp2 - mean(gdat$Present.Surface.Temperature.Mean, na.rm=T))/ sd(gdat$Present.Surface.Temperature.Mean, na.rm=T) 
+
+m_amp_surf_sstm <- ggplot(gdat, aes(x=sPresent.Surface.Temperature.Mean, y=resp, color=lohghurst_biome, shape=lohghurst_biome)) + # , fill=filter_size_cat
+  geom_point() +
+  #geom_smooth(method = "gam") + # gam or loess
+  geom_abline(intercept = int, slope = slop) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Richness", x = "Surface temperature mean (°C)")  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_x_continuous(breaks = hp4, labels = hp2_lab) +
+  scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+    theme(legend.position = "none")  
+
+### for sst range 
+# from model
+int<- 1.81
+slop<- 0.198
+## unscale x axis
+hp<-as.vector(DMwR::unscale(c(-2:2), gdat$sPresent.Surface.Temperature.Range)) # numbers from original plot
+hp2<-c(2,4,6,8)
+hp2_lab<-hp2 # c("5","500","10,000,000")
+#hp3<-log(hp2+1)
+hp4<- (hp2 - mean(gdat$Present.Surface.Temperature.Range, na.rm=T))/ sd(gdat$Present.Surface.Temperature.Range, na.rm=T) 
+
+m_amp_surf_sstr <- ggplot(gdat, aes(x=sPresent.Surface.Temperature.Range, y=resp, color=lohghurst_biome, shape=lohghurst_biome)) + # , fill=filter_size_cat
+  geom_point() +
+  #geom_smooth(method = "gam") + # gam or loess
+  geom_abline(intercept = int, slope = slop) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Richness", x = "Surface temperature range (°C)"    )  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_x_continuous(breaks = hp4, labels = hp2_lab) +
+  scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+    theme(legend.position = "none")  
+
+
+### for pp range
+# from model
+int<-  1.81
+slop<-  -0.264
+## unscale x axis
+hp<-as.vector(DMwR::unscale(c(-1:3), gdat_att$sPresent.Surface.Primary.productivity.Range)) # numbers from original plot
+hp2<-c(0,0.01,0.02,0.03,0.04)
+hp2_lab<-hp2 # c("5","500","10,000,000")
+#hp3<-log(hp2+1)
+hp4<- (hp2 - mean(gdat$Present.Surface.Primary.productivity.Range, na.rm=T))/ sd(gdat$Present.Surface.Primary.productivity.Range, na.rm=T) 
+
+m_amp_surf_ppr <- ggplot(gdat, aes(x=sPresent.Surface.Primary.productivity.Range, y=resp, color=lohghurst_biome, shape=lohghurst_biome)) + # , fill=filter_size_cat
+  geom_point() +
+  #geom_smooth(method = "gam") + # gam or loess
+  geom_abline(intercept = int, slope = slop) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Richness", x = bquote('Surface primary productivity range (g*'~m^-3*"*"~d^-1*')') )  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_x_continuous(breaks = hp4, labels = hp2_lab) +
+  scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+    theme(legend.position = "none")  
+
+# mal surf latidute ##############################################
+gdat$resp<-gdat$rich
+
+mal_surf_amp_lat<-  ggplot(gdat, aes(x=Latitude, y=resp)) + # , fill=filter_size_cat
+      geom_smooth(method = "loess", se=T, col="black") + # gam or loess
+  geom_point(aes(color=lohghurst_biome, shape=lohghurst_biome)) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Richness", x = "Latitude")  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  #scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+  scale_x_continuous(breaks = latlab, labels = latlab, limits=c(-50,50)) +
+    theme(legend.position = "none") +
+    coord_flip()
+
+```
+
+## ampli mal prof plot
+```{r mal plot}
+gdat <- mprof  %>% 
+    mutate(resp=log(rich)) %>%  # hist(sdat$resp) names(gdat)  unique(tdat$lohghurst_biome)
+ mutate(lohghurst_biome=factor(lohghurst_biome,levels=levels(dat_genome4$lohghurst_biome))) 
+
+## back trans y axis and get new tics and clean numbers
+aa=data.frame(x=c(0:3))
+aa<- aa %>% 
+  mutate(real_num=x) %>% 
+  mutate(lab=(exp(x))) %>% 
+  mutate(nlab=c(1,2,4,10)) %>% 
+  mutate(ntic=log(nlab))
+
+### pp mean
+# from model
+int<- 1.34
+slop<- 0.467
+## unscale x axis
+hp<-as.vector(DMwR::unscale(c(-1:1), gdat$sPresent.Surface.Primary.productivity.Mean)) # numbers from original plot
+hp2<-c(0,.005,.01)
+hp2_lab<-hp2 # c("5","500","10,000,000")
+#hp3<-log(hp2+1)
+hp4<- (hp2 - mean(gdat$Present.Surface.Primary.productivity.Mean, na.rm=T))/ sd(gdat$Present.Surface.Primary.productivity.Range, na.rm=T) 
+
+m_amp_prof_ppm <- ggplot(gdat, aes(x=sPresent.Surface.Primary.productivity.Mean, y=resp, color=lohghurst_biome, shape=lohghurst_biome)) + # , fill=filter_size_cat
+  geom_point() +
+  #geom_smooth(method = "gam") + # gam or loess
+  geom_abline(intercept = int, slope = slop) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Richness", x = bquote('Surface primary productivity mean (g*'~m^-3*"*"~d^-1*')')   )  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_x_continuous(breaks = hp4, labels = hp2_lab) +
+  scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+    theme(legend.position = "none")  
+
+```
+
+
+## ampli mal RNA prof plot
+```{r mal plot}
+gdat <- mRNA  %>% 
+    mutate(resp=log(rich)) %>%  # hist(sdat$resp) names(gdat)  unique(tdat$lohghurst_biome)
+ mutate(lohghurst_biome=factor(lohghurst_biome,levels=levels(dat_genome4$lohghurst_biome))) 
+
+## back trans y axis and get new tics and clean numbers
+aa=data.frame(x=c(0:3))
+aa<- aa %>% 
+  mutate(real_num=x) %>% 
+  mutate(lab=(exp(x))) %>% 
+  mutate(nlab=c(1,2,6,12)) %>% 
+  mutate(ntic=log(nlab))
+
+### for pp mean
+# from model
+int<- 1.23
+slop<- 0.59
+## unscale x axis
+hp<-as.vector(DMwR::unscale(c(-1:1), gdat$sPresent.Surface.Primary.productivity.Mean)) # numbers from original plot
+hp2<-c(0,.005,.01)
+hp2_lab<-hp2 # c("5","500","10,000,000")
+#hp3<-log(hp2+1)
+hp4<- (hp2 - mean(gdat$Present.Surface.Primary.productivity.Mean, na.rm=T))/ sd(gdat$Present.Surface.Primary.productivity.Mean, na.rm=T) 
+
+m_amp_RNA_ppm <- ggplot(gdat, aes(x=sPresent.Surface.Primary.productivity.Mean, y=resp, color=lohghurst_biome, shape=lohghurst_biome)) + # , fill=filter_size_cat
+  geom_point() +
+  #geom_smooth(method = "gam") + # gam or loess
+  geom_abline(intercept = int, slope = slop) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Richness", x =  bquote('Surface primary productivity mean (g*'~m^-3*"*"~d^-1*')') )  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_x_continuous(breaks = hp4, labels = hp2_lab) +
+  scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+    theme(legend.position = "none")  
+
+### for pp range  
+# from model
+int<- 1.23
+slop<- -0.83
+## unscale x axis
+hp<-as.vector(DMwR::unscale(c(-1:1), gdat$sPresent.Surface.Temperature.Range)) # numbers from original plot
+hp2<-c(4,6,8)
+hp2_lab<-hp2 # c("5","500","10,000,000")
+#hp3<-log(hp2+1)
+hp4<- (hp2 - mean(gdat$Present.Surface.Temperature.Range, na.rm=T))/ sd(gdat$Present.Surface.Temperature.Range, na.rm=T) 
+
+m_amp_RNA_ppr <- ggplot(gdat, aes(x=sPresent.Surface.Temperature.Range, y=resp, color=lohghurst_biome, shape=lohghurst_biome)) + # , fill=filter_size_cat
+  geom_point() +
+  #geom_smooth(method = "gam") + # gam or loess
+  geom_abline(intercept = int, slope = slop) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Richness", x =  bquote('Surface primary productivity range (g*'~m^-3*"*"~d^-1*')')    )  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_x_continuous(breaks = hp4, labels = hp2_lab) +
+  scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+    theme(legend.position = "none")  
+
+
+```
+
+## ampli mal deep plot
+```{r mal d plot}
+gdat <- mdeep  %>% 
+    mutate(resp=rich) %>%  # hist(sdat$resp) names(gdat)  unique(tdat$lohghurst_biome)
+ mutate(lohghurst_biome=factor(lohghurst_biome,levels=levels(dat_genome4$lohghurst_biome))) 
+
+## back trans y axis and get new tics and clean numbers
+aa=data.frame(x=c(1:4))
+aa<- aa %>% 
+  mutate(real_num=x) %>% 
+  mutate(lab=(exp(x))) %>% 
+  mutate(nlab=c(5,10,20,40)) %>% 
+  mutate(ntic=log(nlab))
+
+# mal deep latidute ##############################################
+
+mal_deep_amp_lat<-  ggplot(gdat, aes(x=Latitude, y=resp)) + # , fill=filter_size_cat
+      geom_smooth(method = "loess", se=T, col="black") + # gam or loess
+  geom_point(aes(color=lohghurst_biome, shape=lohghurst_biome)) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Richness", x = "Prevalence")  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  #scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+  scale_x_continuous(breaks = latlab, labels = latlab, limits=c(-50,50)) +
+    theme(legend.position = "none") +
+    coord_flip()
+
+```
+
+
+## join env plots
+```{r plot prof}
+## combine
+# genome--    tp_depth tp_tempm 
+# amp
+#t_amp_ppm t_amp_ppr m_amp_surf_sstm m_amp_surf_sstr m_amp_surf_ppr m_amp_prof_ppm m_amp_RNA_ppm m_amp_RNA_ppr
+
+# Change legend title and appearnace in the first plot
+t_amp_ppm <-  t_amp_ppm + 
+  theme(legend.position = "bottom") +
+  labs(color = "Longhurst biome") +
+  labs(shape = "Longhurst biome") +
+  guides(color=guide_legend(ncol=7,bycol=TRUE))
+
+  
+  
+p<- ggpubr::ggarrange(t_amp_ppm, t_amp_ppr+ ggpubr::rremove("ylab"),
+                      m_amp_surf_sstm, m_amp_surf_sstr+ ggpubr::rremove("ylab"),
+                      m_amp_surf_ppr, m_amp_prof_ppm+ ggpubr::rremove("ylab"),
+                      m_amp_RNA_ppm, m_amp_RNA_ppr+ ggpubr::rremove("ylab"),
+                      tp_depth, tp_tempm+ ggpubr::rremove("ylab"),
+                      
+                  labels = LETTERS[1:10],
+                  font.label = list(size = 10, face = "plain"),
+                  ncol = 2, nrow = 5,
+                  hjust=-3.7, vjust=1, align= "hv",  # smaler - right, smaller up
+                  common.legend = TRUE, legend = "bottom")
+
+# Annotate the figure by adding a common labels  https://github.com/kassambara/ggpubr/issues/78
+#p2<- annotate_figure(p,
+   #             left = text_grob("Richness", color = "black", rot = 90)  )
+
+#  print(p2)
+## save  
+ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/metagen_and_18s/env_sig_var_10_plot.pdf"
+        , plot = p, width = 20, height = 26, units = "cm" )
+
+```
+
+## plot latitude
+```{r plot prof}
+#  t_amp_lat, mal_surf_amp_lat, mal_deep_amp_lat, t_gen_lat
+blankp <- ggplot() + theme_void()
+# maldeep_gen_lat
+
+# Change legend title and appearnace in the first plot
+t_amp_lat <-  t_amp_lat + 
+  theme(legend.position = "bottom") +
+  labs(color = "Biome") +
+  labs(shape = "Biome") +
+  guides(color=guide_legend(ncol=1,bycol=TRUE))
+
+#  theme(axis.text.y=element_blank(),axis.title.y=element_blank() ) 
+
+lp<- ggpubr::ggarrange(t_amp_lat + annotate("text", label = "A", x = 50, y = 25)  ,
+            mal_surf_amp_lat+ theme(axis.text.y=element_blank(),axis.title.y=element_blank(),plot.margin=margin(1,0,1,0) ) + annotate("text", label = "B", x = 50, y = 3)  ,
+            mal_deep_amp_lat+ theme(axis.text.y=element_blank(),axis.title.y=element_blank() )+ annotate("text", label = "C", x = 50, y = 5) ,
+            t_gen_lat+ annotate("text", label = "D", x = 50, y = 3) , 
+            blankp , 
+            maldeep_gen_lat+ theme(axis.text.y=element_blank(),axis.title.y=element_blank() )+ annotate("text", label = "E", x = 50, y = 0) ,
+                  #labels = c("A", "B", "C","D","","E") ,
+                  #font.label = list(size = 10, face = "plain"),
+                  ncol = 3, nrow = 2,
+                  hjust=-5, vjust=2, align= "h",  # smaler - right, smaller up
+                  widths=c(1.8,1.4,1.5,1.8,1.4,1.5) ,
+                  common.legend = TRUE, legend = "right")
+
+# margin(t = 0, r = 0, b = 0, l = 0
+
+## save  
+ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/metagen_and_18s/lat_plot.pdf"
+        , plot = lp, width = 20, height = 25, units = "cm" )
+
+```
+
+
+
+## plot old
+```{r plot prof}
+
+# mala profile  
+gdat <- prof  %>% 
+    mutate(resp=log(reads_sample+1)) %>%  # hist(sdat$resp) names(gdat)
+    mutate(lohghurst_biome=factor(lohghurst_biome,levels=levels(dat_genome4$lohghurst_biome))) # #  unique(gdat$lohghurst_biome)
+gdat_att<-prof_att
+
+## back trans y axis and get new tics and clean numbers
+aa=data.frame(x=c(3:6))
+aa<- aa %>% 
+  mutate(real_num=x) %>% 
+  mutate(lab=(exp(x)+1)) %>% 
+  mutate(nlab=c(25,50,150,400)) %>% 
+  mutate(ntic=log(nlab+1))
+# length(unique(as.character(gdat$lohghurst_biome)))
+
+##  Depth  #####
+# from model
+int=4.67
+slop=0.0522
+## unscale x axis
+hp<-as.vector(DMwR::unscale(c(-0.9:2), gdat_att$sDepth)) # numbers from original plot
+hp2<-c(5,1000,2000,3000, 4000)
+hp2_lab<-hp2 # c("5","500","10,000,000")
+#hp3<-log(hp2+1)
+hp4<- (hp2 - mean(gdat$Depth, na.rm=T))/ sd(gdat$Depth, na.rm=T) 
+
+prof_depth <- ggplot(gdat, aes(x=sDepth, y=resp, color=lohghurst_biome, shape=lohghurst_biome)) + #
+  geom_point() +
+  #geom_smooth(method = "gam") + # gam or loess
+  geom_abline(intercept = int, slope = slop) +
+  scale_color_manual(values=cc_n, drop = FALSE) +
+  scale_shape_manual(values=shap, drop = FALSE) +
+  labs(y = "Sequence abundance (per million sequences)", x = "Depth (m)")  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_x_continuous(breaks = hp4, labels = hp2_lab) +
+  scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+    theme(legend.position = "none")  
+
+###   mean temp   #####
+# from model
+int=4.67
+slop=-0.00211
+## unscale x axis
+hp<-as.vector(DMwR::unscale(c(-4,-2.5,0.5,1), gdat_att$sPresent.Surface.Temperature.Mean)) # numbers from original plot
+hp2<-c(1,10,20,30)
+hp2_lab<-hp2 
+hp4<- (hp2 - mean(gdat$Present.Surface.Temperature.Mean, na.rm=T))/ sd(gdat$Present.Surface.Temperature.Mean, na.rm=T) 
+
+prof_tempm <- ggplot(gdat, aes(x=sPresent.Surface.Temperature.Mean, y=resp, color=lohghurst_biome, shape=lohghurst_biome)) + # , fill=filter_size_cat
+  geom_point() +
+  #geom_smooth(method = "gam") + # gam or loess
+  geom_abline(intercept = int, slope = slop) +
+  scale_color_manual(values=cc_n) +
+  scale_shape_manual(values=shap) +
+  labs(y = "Sequence abundance (per million sequences)", x = "Mean SST (°C)")  + 
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_x_continuous(breaks = hp4, labels = hp2_lab) +
+  scale_y_continuous(breaks = aa$ntic, labels = aa$nlab) +
+    theme(legend.position = "none")  
+#print(dpp)
+## combine
+p<- ggpubr::ggarrange(tp, mpp, dpp, #+ ggpubr::rremove("x.text"), 
+                  labels = c("A", "B", "C"),
+                  font.label = list(size = 10, face = "plain"),
+                  ncol = 1, nrow = 3,
+                  hjust=-5, vjust=1, align= "hv")  # smaler - right, smaller up
+                  #common.legend = TRUE, legend = "bottom")
+  print(p)
+## save  
+ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/comparison_2019/rich_abund_3cruises.pdf"
+        , plot = p, width = 20, height = 30, units = "cm" )
+
+```
+
+
+
+
+
+
+
+
+
+
+

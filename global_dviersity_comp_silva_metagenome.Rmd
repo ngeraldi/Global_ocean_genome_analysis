@@ -1,0 +1,247 @@
+---
+title: "global_diversity_compare_silva_metagenome"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries}
+library(tidyverse) 
+```
+
+
+## get silva
+```{r silva}
+### copied from global_div_biomass_ncbi used to make plost for global genome workshop talk
+
+setwd("//Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP")
+
+br_div<-openxlsx::read.xlsx("Global_biomass_diversity.xlsx",startRow=1, sheet= "overalldiversity(mora)")
+met_div<-openxlsx::read.xlsx("Global_biomass_diversity.xlsx",startRow=1, sheet = "animal diversity (chapman)")
+met_div2<-openxlsx::read.xlsx("Global_biomass_diversity.xlsx",startRow=1, sheet = "marine_div_Appeltans2012")
+ext_biom<-openxlsx::read.xlsx("Global_biomass_diversity.xlsx",startRow=1, sheet = "biomass")
+
+genall<- read.csv("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/Genome_all.csv") 
+geneuk<- read.csv("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/Genome_euk.csv") 
+silvall<- read.csv("/Users/geraldn/Dropbox/eDNA_db/reference_data/silva/summary_csv/Silva132_dada_and_silva_lineage.csv")
+silva<- read.csv("/Users/geraldn/Dropbox/eDNA_db/reference_data/silva/summary_csv/Silva132_dada_and_silva_lineage_metaz_worms_18sprims.csv")
+# get shorten silva tara mal primers
+t18stara<- seqinr::read.fasta(file ="/Users/geraldn/Dropbox/eDNA_db/reference_data/silva/SILVA_132_SSURef_Nr99_tax_silva_trunc_DNA_insect_18sV9tara.fasta", as.string = TRUE, strip.desc=TRUE) 
+t18smal<- seqinr::read.fasta(file ="/Users/geraldn/Dropbox/eDNA_db/reference_data/silva/SILVA_132_SSURef_Nr99_tax_silva_trunc_DNA_insect_18suniV4.fasta", as.string = TRUE, strip.desc=TRUE) 
+#
+```
+
+## get 18S
+```{r get 18S}
+# get shorten silva tara mal primers
+t18stara<- seqinr::read.fasta(file ="/Users/geraldn/Dropbox/eDNA_db/reference_data/silva/SILVA_132_SSURef_Nr99_tax_silva_trunc_DNA_insect_18sV9tara.fasta", as.string = TRUE, strip.desc=TRUE) 
+t18smal<- seqinr::read.fasta(file ="/Users/geraldn/Dropbox/eDNA_db/reference_data/silva/SILVA_132_SSURef_Nr99_tax_silva_trunc_DNA_insect_18suniV4.fasta", as.string = TRUE, strip.desc=TRUE) 
+#
+t18stara<-seqinr::getAnnot(t18stara)##
+t18stara<-data.frame(do.call(rbind,t18stara)) ### add silva lineage  #   head(silva_lineage)
+colnames(t18stara)[1] <- "accession"
+t18stara<-dplyr::mutate_all(t18stara,as.character)
+t18stara$accession<-gsub("\\..*$","",t18stara$accession)  # remove after space   head(t18stara)
+
+
+t18smal<-seqinr::getAnnot(t18smal)##
+t18smal<-data.frame(do.call(rbind,t18smal)) ### add silva lineage  #   head(silva_lineage)
+colnames(t18smal)[1] <- "accession"
+t18smal<-dplyr::mutate_all(t18smal,as.character)
+t18smal$accession<-gsub("\\..*$","",t18smal$accession)  # rem
+```
+
+## get genome
+```{r}
+uniprotkb_sp<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/metaz manuscript/DMAP_info_Apr19.xlsx", sheet=1, cols = c(1:20))
+
+
+```
+
+## tidy silva and 18s
+```{r tidy_silva_18s}
+## get kingdoms
+alltara<-t18stara %>%   # names(silvall)    head(t18stara)   head(silvall)
+  filter(!duplicated(accession))  %>%
+  left_join(silvall, by="accession") %>% 
+  filter(!duplicated(species)) %>% 
+  filter(superkingdom=="Eukaryota") %>% 
+  filter(grepl("Metazoa",silva_lin))
+# tara all euks  11,370, without meatxoan    metazoan 3924 - 35%
+allmal<-t18smal %>%   # names(silvall)    head(t18stara)   head(silvall)
+  filter(!duplicated(accession))  %>%
+  left_join(silvall, by="accession") %>% 
+  filter(!duplicated(species)) %>% 
+  filter(superkingdom=="Eukaryota") %>% 
+  filter(grepl("Metazoa",silva_lin))
+# all euks  37,147, without meatxoan    metazoan 19,623 - 53%
+## silva diverstiy    names(silva)       metazoan, marine metaz, marinetara, marine mal
+# all metazoans   10,476
+silva<-silva %>% 
+  mutate(silva_lin==as.character(silva_lin)) %>% 
+  filter(grepl("Metazoa",silva_lin)) %>% # not needed but left in
+  filter(!duplicated(order:species)) 
+## summarries   ########
+#### silva metaz
+silv_metaz <-silva %>% 
+  dplyr::group_by(phylum) %>% 
+  dplyr::summarise(silva_rich=n()) 
+# silva metazoan marine       5274
+silv_metaz_mar<-silva %>% 
+  filter(isMarine==1) %>% 
+  dplyr::group_by(phylum) %>% 
+  dplyr::summarise(silva_mar_rich=n()) 
+# marine tara        1380 rows
+silv_tar<-silva %>% # 
+  filter(t18sV9tara_col=="yes")  %>%
+  filter(isMarine==1) %>% 
+  dplyr::group_by(phylum) %>% 
+  dplyr::summarise(silva_tara_rich=n()) 
+#### mes   # check to make sure
+mes2<-silva %>% # 
+  filter(t18sV9tara_col=="yes")  %>%
+  filter(isMarine==1) %>% 
+  filter(phylum=="Arthropoda") %>% 
+   filter(order=="Calanoida")   # 84,22 calan species in tara  321,69 calan in mal
+# marine mal           5091 rows   !!!!!!!
+silv_mal<-silva %>% # 
+  filter(t18sV4uni_col=="yes")  %>%
+  filter(isMarine==1) %>% 
+  dplyr::group_by(phylum) %>% 
+  dplyr::summarise(silva_mal_rich=n()) 
+# marine 18smini           1380 rows
+silv_mini<-silva %>% # 
+  filter(t18smini_col=="yes")  %>%
+  filter(isMarine==1) %>% 
+  dplyr::group_by(phylum) %>% 
+  dplyr::summarise(silva_18smini_rich=n()) 
+# marine euka02           5123 rows   !!!!!
+silv_euka02<-silva %>% # 
+  filter(t18seuka02_col=="yes")  %>%
+  filter(isMarine==1) %>% 
+  dplyr::group_by(phylum) %>% 
+  dplyr::summarise(silva_euka02_rich=n()) 
+
+#######   fix diversity from appel
+names(met_div2)[6]<-"described"
+names(met_div2)[2]<-"phylum"
+met_div22 <- met_div2 %>% # names(met_div2)
+  filter(kingdom=="Animalia") %>% 
+  dplyr::group_by(phylum) %>% 
+  dplyr::summarise(marine_appl_described=sum(described)) 
+
+
+```
+
+## join
+```{r join}
+
+## genome sequences
+uniprotkb_sp2<-uniprotkb_sp %>%   # names(uniprotkb_sp)
+  select(silva, pf7, ec4, ec3) %>% 
+  group_by(silva) %>% 
+  summarize_all(sum) %>% 
+  dplyr::rename(phylum=silva)
+
+
+
+names(met_div)[2]<-"described_chapman"
+silcomp <- met_div %>% 
+  left_join(met_div22) %>% 
+  left_join(silv_metaz_mar) %>% 
+  left_join(silv_tar) %>% 
+  left_join(silv_mal) %>% 
+  left_join(uniprotkb_sp2) %>% 
+  #mutate(percent_nc=silva_rich/richness) %>% 
+  #filter(richness>100) %>% 
+  arrange(desc(marine_appl_described))
+
+
+  
+
+```
+
+## plot
+```{r plot}
+# eukaryots only
+n<-20
+cc1<-topo.colors(n)
+cc1<-c("#ba4758","#53c27c","#8750a6","#8fb63e", "#677fd7","#cd9c2e",
+  "#b74d86","#5cb455","#b84e38", "#43c9b0","#cc803d","#42752b","#93712f")   #,"#a5ba69","#a7a140")
+cc1<-c("#023fa5", "#7d87b9", "#bec1d4", "#d6bcc0", "#bb7784", "#8e063b", "#4a6fe3", "#8595e1", "#b5bbe3", "#e6afb9", "#e07b91", "#d33f6a", "#11c638", "#8dd593", "#c6dec7", "#ead3c6", "#f0b98d", "#ef9708", "#0fcfc0", "#9cded6", "#d5eae7", "#f3e1eb", "#f6c4e1", "#f79cd4")
+cc1<-cc1[1:n]
+dat<-silcomp[1:n,c(3,5,6)]   # names(silcomp)   names(dat)
+rownames(dat) <- silcomp[1:n,1]
+y<-dat$marine_appl_described
+yy<-dat$silva_tara_rich
+yyy<-dat$silva_mal_rich
+y4<-silcomp$ec3[1:n]+1
+y5<-silcomp$ec4[1:n]+1
+y6<-silcomp$pf7[1:n]+1
+
+xxlim<-c(0.7,24)
+######################################
+par(mfrow=c(6,1),oma=c(9,6,1,1),mar=c(1.5,2,1,2))
+b<-barplot(y,names.arg=NULL, horiz=F,log="y",col=cc1, ylim=c(1,100000), xlim=xxlim,
+          beside=T, axes=F)
+axis(2,las=1, at=c(1,100,1000,10000,100000), cex.axis=1.4, 
+     labels=format(c(1,100,1000,10000,100000), scientific=FALSE))
+axis(1,las=2, at=b, cex.axis=1.4, labels=F)
+text(0.3,150000,  label="A", xpd=NA, cex=1.4)
+### tar
+ly<-seq(from=0, to=1000, by=250)
+b<-barplot(yy,names.arg=NULL, horiz=F,col=cc1, ylim=c(1,1010), xlim=xxlim,
+           beside=T, axes=F, add=F)
+axis(2,las=1, at=ly, cex.axis=1.4, 
+     labels=ly
+     )
+axis(1,las=2, at=b, cex.axis=1.4, labels=F)
+text(0.3,1050,  label="B", xpd=NA, cex=1.4)
+# mal
+b<-barplot(yyy,names.arg=NULL, horiz=F,col=cc1, ylim=c(1,1010),xlim=xxlim,
+           beside=T, axes=F, add=F)
+axis(2,las=1, at=ly, cex.axis=1.4, 
+     labels=ly)
+axis(1,las=2, at=b, cex.axis=1.4, labels=F)
+text(0.3,1080,  label="C", xpd=NA, cex=1.4)
+
+# ec3
+b<-barplot(y4,names.arg=NULL, horiz=F,log="y",col=cc1, ylim=c(1,2500), xlim=xxlim,
+           beside=T, axes=F, add=F)
+axis(2,las=1, at=c(1,10,100,1000), cex.axis=1.4, 
+     labels=format(c(1,10,100,1000), scientific=FALSE))
+axis(1,las=2, at=b, cex.axis=1.4, labels=F)
+text(0.3,3600,  label="D", xpd=NA, cex=1.4)
+
+# ec4
+b<-barplot(y5,names.arg=NULL, horiz=F,log="y",col=cc1, ylim=c(1,15000), xlim=xxlim,
+           beside=T, axes=F, add=F)
+axis(2,las=1, at=c(1,100,1000,10000), cex.axis=1.4, 
+     labels=format(c(1,100,1000,10000), scientific=FALSE))
+axis(1,las=2, at=b, cex.axis=1.4, labels=F)
+text(0.3,15100,  label="E", xpd=NA, cex=1.4)
+
+# pf7
+b<-barplot(y6,names.arg=NULL, horiz=F,col=cc1,log="y", ylim=c(1,11000), xlim=xxlim,
+           beside=T, axes=F, add=F)
+axis(2,las=1, at=c(1,100,1000,10000), cex.axis=1.4, 
+     labels=format(c(1,100,1000,10000), scientific=FALSE))
+axis(1,las=2, at=b, cex.axis=1.4, labels=rownames(dat))
+text(0.3,15100,  label="F", xpd=NA, cex=1.4)
+
+##
+mtext("Number of species", 2,las=0,line=2.5, cex=1.1, at=.75 ,outer=TRUE)
+mtext("Number of sequences", 2,las=0,line=2.5, cex=1.1, at=.27 ,outer=TRUE)
+
+```
+
+
+
+
+
+
+
+
+

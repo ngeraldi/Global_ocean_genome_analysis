@@ -1,0 +1,618 @@
+---
+title: "biomass_compare"
+author: "Nathan R. Geraldi"
+date: "April 6, 2019"
+output: github_document
+---
+
+set table options
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## libraries
+```{r libraries, message=FALSE, warning=FALSE}
+library(RColorBrewer)
+library(tidyverse) 
+library(broom)
+#library(edgeR)
+library(corrplot)
+library(lme4)
+library(lmerTest)
+library(scales)
+library(ggplot2)
+
+library(spdep)
+library(spatialreg)
+
+#  install.packages("devtools")
+#  devtools::install_github("grunwaldlab/metacoder")
+
+```
+
+## functions
+```{r functions, message=FALSE, warning=FALSE}
+# function to remove rows with n number of NA's
+delete.na <- function(DF, n=0) {
+  DF[rowSums(is.na(DF)) <= n,]
+}
+
+# Specify alpha as a percentage:
+colorRampAlpha <- function(..., n, alpha) {
+   colors <- colorRampPalette(...)(n)
+   paste(colors, sprintf("%x", ceiling(255*alpha)), sep="")
+}
+
+# for good tick mark labels for ggplot
+base_breaks <- function(n = 10){
+    function(x) {
+        axisTicks(log10(range(x, na.rm = TRUE)), log = TRUE, n = n)
+    }
+}
+
+```
+
+
+## define universal variables
+```{r define_universal}
+stud_pat<-"Dammam"  # matches study specific title from pipe (begining of files).
+dir<-"/Users/geraldn/Dropbox/"
+out_file<-"Documents/KAUST/eDNA/R/pipe_summary"
+# export  to project folder
+export_file<-"Documents/KAUST/eDNA/R/csv/"
+
+```
+
+## import taxa t
+```{r taxa_table}
+## taxa conversions to make data comparable
+taxa_DNA_net<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/taxa_table.xlsx", sheet=1)
+taxa_net_DNA<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/taxa_table.xlsx", sheet=2)
+```
+
+
+
+## metagenome
+```{r metagenome}
+
+# genome data from DMAP        
+dat_genome<-data.table::fread(file = '/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/DMAP_biomass_apr19.csv', sep = ',', header = TRUE)
+##   add column differentiat malaspina profile and deep
+dat_genome<- dat_genome %>%   # names(dat_genome)
+  mutate(cruise_area="Tara") %>% 
+  #mutate(cruise_area=if_else(grepl("MP", ID.x), "Malaspina profiles", cruise_area)) %>% 
+  #mutate(cruise_area=if_else(grepl("BATHY", ID.x), "Malaspina deep", cruise_area)) %>% 
+  #mutate(cruise_area=factor(cruise_area, levels=c("Tara","Malaspina profiles","Malaspina deep"))) %>% 
+  mutate(pid=forcats::fct_recode(pid, "PID_50" ="pid50","PID_70" ="pid70","PID_90" ="pid90" )) %>% 
+  mutate(Depth = ifelse(Cruise == "TARA", Depth.env, Depth)) %>% 
+  filter(!filter_size=="") %>% 
+  group_by_at(vars(unique_ID:pid,Depth,phylum)) %>% # was sp_num in stats_source
+  summarize(reads=sum(reads)) %>% 
+  ungroup() %>% 
+  group_by_at(vars(unique_ID:pid)) %>% 
+  mutate(reads_sample=sum(reads)) %>% 
+  ungroup() %>% 
+  mutate(reads_percent=reads/reads_sample) %>% 
+  dplyr::rename(Phylum=phylum) %>% 
+  left_join(taxa_DNA_net, by=c("Phylum" = "DNA_taxa"))
+#  names(dat)   levels(dat$pid)
+#########       get filter catagories
+filcat<-data.frame(unique(dat_genome$filter_size))
+colnames(filcat)[1] <- "filter_size"
+filcat$filter_size_cat<-c("0.2-3","1-20","1-20","0.2-3","0.2-3","1-20","0.1-0.22","0.2-3","0.2-3","0.2-3")
+dat_genome<-left_join(dat_genome, filcat, by="filter_size")   #  unique(dat_genome$filter_size_cat)
+
+mes<-dat_genome %>% 
+   filter(pid=="PID_70") %>% 
+  filter(gene_domain=="ec4") %>% 
+  filter(Cruise=="Malaspina") %>% 
+  filter(filter_size=="3.20") %>% 
+  filter(!duplicated(Station))
+#  unique(mes$filter_size)
+
+dat_genome<- dat_genome %>% 
+  filter(filter_size_cat=="0.2-3") %>% 
+  filter(pid=="PID_70") %>% 
+  filter(gene_domain=="ec4")
+
+
+
+```
+
+
+## Tara 18S
+```{r tara_18S}
+#  !!  tara 0.5-5   !!!!!!!!!!!!
+########################################################################################################
+source("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/R/projects/Global_ocean_genome_analysis/amplicon_stats_tara_source.R")
+## if memory error -  close r, then run the following in terminal, then open R -- export R_MAX_VSIZE=32000000000
+tdat<- stat_rare[["read_low_sp"]] 
+names(tdat)
+tdat1<- tdat %>% 
+  mutate(Cruise="Tara") %>% 
+  dplyr::rename(Station = TStation) %>% 
+  filter(filter_size_cat==".5-5")
+
+tdatb<- tdat %>% 
+  mutate(Cruise="Tara") %>% 
+  dplyr::rename(Station = TStation) %>% 
+  filter(filter_size_cat=="180-2000")   # 5-20, 20-200, 180-2000 :  n's  33, 66 , 70
+
+tdat_all<- tdat %>%   ####   names(tdat_all)
+  mutate(Cruise="Tara") %>% 
+  dplyr::rename(Station = TStation) %>% 
+  mutate(lohghurst_biome=Locality.2) # fix for mdat to match tara
+
+#Mdat$Depth_cat <- cut(Mdat$Depth, breaks=c(-Inf,10, 100,500 ,1000, 2000, 3000, Inf), 
+#                           labels=c("<10m","10-100m","100-500m","500-1000m","1000-2000m","2000-3000m",">3000m"))
+#mdat2$Depth_cat <- cut(mdat2$Depth, breaks=c(-Inf,11, 200, 1000, 2000, 3910, Inf), labels=c("<10m","10-200m","200-1000m","1000-2000m","2000-3910m","3995-4020m"))
+
+
+```
+
+## Mala 18S
+
+```{r mala_18S}
+#  !!  malaspina 18S only one filter, 0.2-3   !!!!!!!!!!!!
+########################################################################################################
+pat<-c("Annelida","Arthropoda","Chordata","Cnidaria","Ctenophora","Echinodermata","Gastrotricha","Mollusca",
+       "Nematoda","Orthonectida","Platyhelminthes","Porifera","Rotifera","Sipuncula","Tardigrada","Urochordata","Chaetognatha", "Craniata","Nemertea","Bryozoa","Hemichordata","Brachiopoda","Entoprocta","Cephalochordata","Entoprocta") 
+pat<-paste(pat, collapse = "|")
+pat_arth<-c("Malacostraca","Maxillopoda","Ostracoda")
+pat_arth<-paste(pat, collapse = "|")
+
+source("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/R/projects/Global_ocean_genome_analysis/amplicon_stats_mal_source.R")
+names(dat)  
+## save so don't overwrite
+mdat<-stat[["rare.species.DNA_read_low"]]  ## 
+
+mdat <- mdat  %>% 
+  filter(!grepl("Surface",Depth_region)) %>% 
+  mutate(Cruise=if_else(Depth_region=="Deep",Depth_region,"Profile")) %>% 
+  filter(complete.cases(Station)) %>% 
+  mutate(filter_size_cat=".5-5")
+
+# fix for mdat to match tara
+mdat$lohghurst_biome <-mdat$Full.name
+
+## combine to make one 18s  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+## only best filters - Tara 0.5-5
+common_cols <- intersect(colnames(tdat1), colnames(mdat))
+DNA18s<-rbind(tdat1[, common_cols], mdat[, common_cols])
+names(DNA18s)
+## include all Tara filters
+common_cols <- intersect(colnames(tdat_all), colnames(mdat))
+DNA18s_all<-rbind(tdat_all[, common_cols], mdat[, common_cols])
+
+# prep and join 18s     names(DNA18s)
+DNA18s2<-DNA18s %>% 
+  mutate(Depth=10*ceiling(Depth/10)) %>%  # round depths to tens digit
+  dplyr::rename(area=Cruise) %>% 
+  mutate(Cruise=if_else(area=="Tara","TARA","Malaspina"))# fix cruise
+
+DNA18s2_all<-DNA18s_all %>% 
+  mutate(Depth=10*ceiling(Depth/10)) %>%  # round depths to tens digit
+  dplyr::rename(area=Cruise) %>% 
+  mutate(Cruise=if_else(area=="Tara","TARA","Malaspina"))# fix cruise
+ #  unique(DNA18s2_all$filter_size_cat) 
+```
+
+## net data
+
+```{r net_data}
+# overall biomass - don't need
+#mal_net_bio<-read.csv("/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomassZooplankton #Biomass Malaspina.csv")
+
+# abundance from Mariluz
+mal_net_abun<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/Zooplankton_Malaspina_abund.xlsx", sheet=1)
+mal_net_abun_depth_convert<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/Zooplankton_Malaspina_abund.xlsx", sheet=2)
+
+## biomass from Santiago, this sheet also has abundance
+mal_net_biomass<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/tow_biomass_ABDCIA_all_MALASPINA.xlsx", sheet=1)
+
+# biomass      names(mal_net_biomass)
+mal_net_biomass2 <- mal_net_biomass %>% 
+  dplyr::rename( "Station"="Estación","strata"  ="Estrato","Depth" ="Profundidad.(m)", "Chaetognatha"="Bio.Chaetognatha", "Copepoda"="Bio.Copepoda", "Euphausiids.Like"="Bio.Euphausiids.Like", "Gelatinous"="Bio.Gelatinous", "Other.Mesoz."="Bio.Other.Mesoz.") %>% 
+  separate(Depth, into=c("min_depth","max_depth"), sep="-", remove=TRUE, convert=TRUE) %>% 
+  gather(key=taxa, value=biomass, Chaetognatha:Other.Mesoz.) %>% 
+  mutate(biomass_percent=biomass/Bio.total) %>% 
+  mutate(taxa_j=taxa) %>% 
+  mutate(taxa_j=replace(taxa_j, taxa_j=="Euphausiids.Like","Arthropoda")) %>% 
+  mutate(taxa_j=replace(taxa_j, taxa_j=="Copepoda","Arthropoda"))
+
+# abudnance   #  names(mal_net_abun2)  mal_net_abun_depth_convert
+mal_net_abun2 <- mal_net_abun %>% 
+  gather(key=taxa, value=abundance_percent, Jellyfish:Meroplankton.Larvae)  %>% 
+  left_join(mal_net_abun_depth_convert) %>% 
+  left_join(taxa_net_DNA, by=c("taxa" = "abundance_taxa")) %>% 
+  mutate(abundance_percent=abundance_percent/100) # make 0-1 so same as others
+#????
+
+```
+
+## join DNA
+```{r join_DNA}
+# need all sample/taxa compinations as rows and each differe "dataset" as columns !!
+
+  
+  #  unique(DNA18s2$Station)    unique(dat_genome2$Station)
+
+# join with genome, first need to sum   names(dat_genome2)
+dat_genome2 <- dat_genome %>% 
+  group_by(unique_ID,ID.x,Sample,Station,Cruise,area, Depth , filter_size_cat) %>% 
+  summarise(reads_per_sample=sum(reads)) %>%    # sum for each sample
+  #filter(reads_percent > 0) %>%  # remove 0's then add 0's in spread
+  ungroup() %>% 
+  mutate(Depth=10*ceiling(Depth/10)) %>%
+  mutate(Station=as.integer(Station)) %>% 
+  filter(complete.cases(Station)) %>% 
+  select(Station,Cruise,Depth,reads_per_sample)
+ #  unique(dat_genome2$filter_size)   unique(dat_genome$filter_size)
+
+DNA_all<-DNA18s2_all %>%   # names(DNA18s2)  names(dat_genome2)
+  inner_join(dat_genome2, by = c("Station", "Depth", "Cruise")) %>% 
+  mutate(rich_abund= log(reads_per_sample+1) / log(rich+1)) %>%
+  mutate(rich_abund2= log( (reads_per_sample /rich) +1) ) %>%
+  mutate(ra_sc= scale(reads_per_sample) / scale(rich)) %>%   # best for making normal
+  mutate(ra_sc_mess=log(abs(ra_sc)+1)) %>% # then transfrom to reduce outlier influence
+  mutate(ra_sc_trans=if_else(ra_sc<0,(ra_sc_mess*-1), ra_sc_mess)) #  !! use this for stats, nice an normal!!!!!
+# hist(DNA_all$rich_abund)    hist(DNA_all$ra_sc)   hist(DNA_all$ra_sc_trans)
+
+
+
+# number of samples  ---  61 samples  !!!!!!!!
+mes<-DNA %>%
+  mutate(sample=paste(Station,Depth ,sep="_")) %>% 
+  filter(!duplicated(sample))
+
+```
+
+
+## stats tara
+```{r stats tara}
+#   names(DNA_all)
+sdat <- DNA_all %>% 
+  filter(Cruise=="TARA")
+
+########################################################################################################
+###scale scale=TRUE divides by the standanrd deviation default does both center and scale
+sdat$sTemp.<-scale(sdat$Temp.)
+sdat$sDepth<-scale(sdat$Depth)
+sdat$sLand_Dist<-scale(sdat$land_dist)
+sdat$sLatitude<-scale(sdat$Latitude)
+#sdat$sChlorophyll<-scale(sdat$Chlorophyll)
+sdat$sLatitude_abs<-scale(sdat$Latitude_abs)
+sdat$sPresent.Surface.Temperature.Mean<-scale(sdat$Present.Surface.Temperature.Mean)
+sdat$sPresent.Surface.Temperature.Range<-scale(sdat$Present.Surface.Temperature.Range)
+sdat$sPresent.Surface.Primary.productivity.Mean<-scale(sdat$Present.Surface.Primary.productivity.Mean)
+sdat$sPresent.Surface.Primary.productivity.Range<-scale(sdat$Present.Surface.Primary.productivity.Range)
+sdat$sPop_in_100km.Mean<-scale(sdat$Pop_in_100km)
+sdat$sPop_in_1000km<-scale(sdat$Pop_in_1000km)
+sdat$sOHI_2013<-scale(sdat$OHI_2013)
+
+
+############################################################################################################
+########################################################################################################
+####   spatial stats  names(sdat)
+#Create a k=4 nearest neighbor set
+sdat<-sdat[complete.cases(sdat$Latitude),]
+ssdat<-sdat
+sp::coordinates(ssdat) <- ~Longitude+Latitude
+#
+us.nb4<-knearneigh(coordinates(ssdat), k=8)
+us.nb4<-knn2nb(us.nb4)
+us.wt4<-nb2listw(us.nb4, style="W")
+#
+########################################################################################################
+########################################################################################################
+########################################################################################################
+###  richness    names(sdat)     names(sdat2) head
+
+lmer.mod<-lmer(ra_sc_trans~sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+    sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+    sPresent.Surface.Primary.productivity.Range+sOHI_2013+(1|lohghurst_biome/Station),data=sdat)##
+#
+#   mes<- c(AIC(lmer.mod),AIC(lmer.mod2))
+mod<-lm(ra_sc_trans~sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+          sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+          sPresent.Surface.Primary.productivity.Range+sOHI_2013,ssdat)
+#SAR - Lag model
+fit.lag<-lagsarlm(mod, ssdat, listw=us.wt4, type="lag", method="MC")
+#  summary(fit.lag, Nagelkerke=T)
+#SAR - Error model
+fit.err<-errorsarlm(mod, ssdat, listw=us.wt4, etype="error", method="MC")
+#    summary(fit.err, Nagelkerke=T)
+#Spatial Durbin Model
+fit.durb<-lagsarlm(mod, ssdat, listw=us.wt4, type="mixed", method="MC")
+#   summary(fit.durb, Nagelkerke=T)
+#Spatial Durbin Error Model
+fit.errdurb<-errorsarlm(mod, ssdat, listw=us.wt4, etype="emixed", method="MC")
+#   summary(fit.errdurb, Nagelkerke=T)
+#SAC Model  
+fit.sac<-sacsarlm(mod, ssdat, listw=us.wt4, type="sac", method="MC")
+#    summary(fit.sac, Nagelkerke=T)
+#SMA model  
+fit.sma<-spautolm(mod, ssdat, listw=us.wt4, family="SMA")
+#   summary(fit.sma, Nagelkerke=T)
+AICs<-c(AIC(lmer.mod),AIC(mod),AIC(fit.lag), AIC(fit.err), AIC(fit.durb), AIC(fit.errdurb), AIC(fit.sac), AIC(fit.sma))
+AICs
+#  fit.sma  #  best
+###################  test interactions
+#           #   summary(fit.sma, Nagelkerke=T)
+### check if interactions improve model
+
+mod2<-lm(ra_sc_trans~(sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+                 sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+                 sPresent.Surface.Primary.productivity.Range+sOHI_2013)^2,data=ssdat)##
+
+mod2<-lm(ra_sc_trans~sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+                         sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+                         sPresent.Surface.Primary.productivity.Range+sOHI_2013
+         + sDepth:sOHI_2013   
+           
+           ,data=ssdat)
+
+fit.sma<-spautolm(mod2, ssdat, listw=us.wt4, family="SMA")
+summary(fit.sma, Nagelkerke=T)
+AIC(fit.sma)   ## 790 aic 
+
+```
+
+
+## stats mal prof
+```{r stats prof}
+#   names(DNA_all)
+sdat <- DNA_all %>% 
+  filter(area=="Profile")  # unique(DNA_all$area)
+
+########################################################################################################
+###scale scale=TRUE divides by the standanrd deviation default does both center and scale
+sdat$sTemp.<-scale(sdat$Temp.)
+sdat$sDepth<-scale(sdat$Depth)
+sdat$sLand_Dist<-scale(sdat$land_dist)
+sdat$sLatitude<-scale(sdat$Latitude)
+#sdat$sChlorophyll<-scale(sdat$Chlorophyll)
+sdat$sLatitude_abs<-scale(sdat$Latitude_abs)
+sdat$sPresent.Surface.Temperature.Mean<-scale(sdat$Present.Surface.Temperature.Mean)
+sdat$sPresent.Surface.Temperature.Range<-scale(sdat$Present.Surface.Temperature.Range)
+sdat$sPresent.Surface.Primary.productivity.Mean<-scale(sdat$Present.Surface.Primary.productivity.Mean)
+sdat$sPresent.Surface.Primary.productivity.Range<-scale(sdat$Present.Surface.Primary.productivity.Range)
+sdat$sPop_in_100km.Mean<-scale(sdat$Pop_in_100km)
+sdat$sPop_in_1000km<-scale(sdat$Pop_in_1000km)
+sdat$sOHI_2013<-scale(sdat$OHI_2013)
+
+
+############################################################################################################
+########################################################################################################
+####   spatial stats  names(sdat)
+#Create a k=4 nearest neighbor set
+sdat<-sdat[complete.cases(sdat$Latitude),]
+ssdat<-sdat
+sp::coordinates(ssdat) <- ~Longitude+Latitude
+#
+us.nb4<-knearneigh(coordinates(ssdat), k=8)
+us.nb4<-knn2nb(us.nb4)
+us.wt4<-nb2listw(us.nb4, style="W")
+#
+########################################################################################################
+########################################################################################################
+########################################################################################################
+###  richness    names(sdat)     names(sdat2) head
+
+lmer.mod<-lmer(ra_sc_trans~sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+    sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+    sPresent.Surface.Primary.productivity.Range+sOHI_2013+(1|lohghurst_biome/Station),data=sdat)##
+#
+#   mes<- c(AIC(lmer.mod),AIC(lmer.mod2))
+mod<-lm(ra_sc_trans~sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+          sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+          sPresent.Surface.Primary.productivity.Range+sOHI_2013,ssdat)
+#SAR - Lag model
+fit.lag<-lagsarlm(mod, ssdat, listw=us.wt4, type="lag", method="MC")
+#  summary(fit.lag, Nagelkerke=T)
+#SAR - Error model
+fit.err<-errorsarlm(mod, ssdat, listw=us.wt4, etype="error", method="MC")
+#    summary(fit.err, Nagelkerke=T)
+#Spatial Durbin Model
+fit.durb<-lagsarlm(mod, ssdat, listw=us.wt4, type="mixed", method="MC")
+#   summary(fit.durb, Nagelkerke=T)
+#Spatial Durbin Error Model
+fit.errdurb<-errorsarlm(mod, ssdat, listw=us.wt4, etype="emixed", method="MC")
+#   summary(fit.errdurb, Nagelkerke=T)
+#SAC Model  
+fit.sac<-sacsarlm(mod, ssdat, listw=us.wt4, type="sac", method="MC")
+#    summary(fit.sac, Nagelkerke=T)
+#SMA model  
+fit.sma<-spautolm(mod, ssdat, listw=us.wt4, family="SMA")
+#   summary(fit.sma, Nagelkerke=T)
+AICs<-c(AIC(lmer.mod),AIC(mod),AIC(fit.lag), AIC(fit.err), AIC(fit.durb), AIC(fit.errdurb), AIC(fit.sac), AIC(fit.sma))
+AICs
+#  fit.sma  #  best
+###################  test interactions
+#           #   summary(fit.sma, Nagelkerke=T)
+### check if interactions improve model
+
+mod2<-lm(ra_sc_trans~(sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+                 sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+                 sPresent.Surface.Primary.productivity.Range+sOHI_2013)^2,data=ssdat)##
+
+mod2<-lm(ra_sc_trans~sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+                         sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+                         sPresent.Surface.Primary.productivity.Range+sOHI_2013
+                                
+      #  Not enough replicates to run interations !!!!!!!
+           ,data=ssdat)
+
+fit.sma<-spautolm(mod2, ssdat, listw=us.wt4, family="SMA")
+summary(fit.sma, Nagelkerke=T)
+AIC(fit.sma)   ## 790 aic 
+
+```
+
+
+## stats mal deep
+```{r stats deep}
+#   names(DNA_all)
+sdat <- DNA_all %>% 
+  filter(area=="Deep")  # unique(DNA_all$area)
+
+########################################################################################################
+###scale scale=TRUE divides by the standanrd deviation default does both center and scale
+sdat$sTemp.<-scale(sdat$Temp.)
+sdat$sDepth<-scale(sdat$Depth)
+sdat$sLand_Dist<-scale(sdat$land_dist)
+sdat$sLatitude<-scale(sdat$Latitude)
+#sdat$sChlorophyll<-scale(sdat$Chlorophyll)
+sdat$sLatitude_abs<-scale(sdat$Latitude_abs)
+sdat$sPresent.Surface.Temperature.Mean<-scale(sdat$Present.Surface.Temperature.Mean)
+sdat$sPresent.Surface.Temperature.Range<-scale(sdat$Present.Surface.Temperature.Range)
+sdat$sPresent.Surface.Primary.productivity.Mean<-scale(sdat$Present.Surface.Primary.productivity.Mean)
+sdat$sPresent.Surface.Primary.productivity.Range<-scale(sdat$Present.Surface.Primary.productivity.Range)
+sdat$sPop_in_100km.Mean<-scale(sdat$Pop_in_100km)
+sdat$sPop_in_1000km<-scale(sdat$Pop_in_1000km)
+sdat$sOHI_2013<-scale(sdat$OHI_2013)
+
+
+############################################################################################################
+########################################################################################################
+####   spatial stats  names(sdat)
+#Create a k=4 nearest neighbor set
+sdat<-sdat[complete.cases(sdat$Latitude),]
+ssdat<-sdat
+sp::coordinates(ssdat) <- ~Longitude+Latitude
+#
+us.nb4<-knearneigh(coordinates(ssdat), k=8)
+us.nb4<-knn2nb(us.nb4)
+us.wt4<-nb2listw(us.nb4, style="W")
+#
+########################################################################################################
+########################################################################################################
+########################################################################################################
+###  richness    names(sdat)     names(sdat2) head
+
+lmer.mod<-lmer(ra_sc_trans~sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+    sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+    sPresent.Surface.Primary.productivity.Range+sOHI_2013+(1|lohghurst_biome/Station),data=sdat)##
+#
+#   mes<- c(AIC(lmer.mod),AIC(lmer.mod2))
+mod<-lm(ra_sc_trans~sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+          sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+          sPresent.Surface.Primary.productivity.Range+sOHI_2013,ssdat)
+#SAR - Lag model
+fit.lag<-lagsarlm(mod, ssdat, listw=us.wt4, type="lag", method="MC")
+#  summary(fit.lag, Nagelkerke=T)
+#SAR - Error model
+fit.err<-errorsarlm(mod, ssdat, listw=us.wt4, etype="error", method="MC")
+#    summary(fit.err, Nagelkerke=T)
+#Spatial Durbin Model
+fit.durb<-lagsarlm(mod, ssdat, listw=us.wt4, type="mixed", method="MC")
+#   summary(fit.durb, Nagelkerke=T)
+#Spatial Durbin Error Model
+fit.errdurb<-errorsarlm(mod, ssdat, listw=us.wt4, etype="emixed", method="MC")
+#   summary(fit.errdurb, Nagelkerke=T)
+#SAC Model  
+fit.sac<-sacsarlm(mod, ssdat, listw=us.wt4, type="sac", method="MC")
+#    summary(fit.sac, Nagelkerke=T)
+#SMA model  
+fit.sma<-spautolm(mod, ssdat, listw=us.wt4, family="SMA")
+#   summary(fit.sma, Nagelkerke=T)
+AICs<-c(AIC(lmer.mod),AIC(mod),AIC(fit.lag), AIC(fit.err), AIC(fit.durb), AIC(fit.errdurb), AIC(fit.sac), AIC(fit.sma))
+AICs
+#  fit.sma  #  best
+###################  test interactions
+#           #   summary(fit.sma, Nagelkerke=T)
+### check if interactions improve model
+
+mod2<-lm(ra_sc_trans~(sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+                 sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+                 sPresent.Surface.Primary.productivity.Range+sOHI_2013)^2,data=ssdat)##
+
+mod2<-lm(ra_sc_trans~sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+                         sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+                         sPresent.Surface.Primary.productivity.Range+sOHI_2013
+                                
+      #  Not enough replicates to run interations !!!!!!!
+           ,data=ssdat)
+
+fit.sma<-spautolm(mod2, ssdat, listw=us.wt4, family="SMA")
+summary(fit.sma, Nagelkerke=T)
+AIC(fit.sma)   ## 790 aic 
+
+```
+
+## plot
+```{r plot}
+
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30')
+cc4<-c('#543005','#dfc27d','#80cdc1','black')
+c1<-c('#543005')
+lab<-c(".5-5" , "5-20", "20-200","180-2000" )
+## for scale_descrete
+fac_col <-setNames( cc4, lab )
+
+DNA_tara <-  DNA_all %>% 
+  filter(Cruise=="TARA") %>% 
+  mutate(filter_size_cat = as.character(filter_size_cat)) %>% 
+    #mutate(filter_size_cat = if_else(filter_size_cat== ".5-5", "0.5-5",filter_size_cat)) %>% 
+   #mutate(filter_size_cat = factor(filter_size_cat , levels = lab)) %>% 
+  mutate(filter_size_cat=as.character(filter_size_cat)) %>% 
+    filter(filter_size_cat == ".5-5")  %>% 
+    mutate(filter_size_cat = factor(filter_size_cat))
+
+
+
+tp<-ggplot(DNA_tara, aes(x=reads_per_sample,y=rich)) + # , color=filter_size_cat, fill=filter_size_cat
+    geom_point(color=c1) +
+   geom_smooth(method = "gam", fill=c1, color=c1) + # gam or loess
+  #scale_color_manual(values=cc4) +
+  #scale_fill_manual(values=cc4) +
+  labs(y = "", x = "")  +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+  scale_x_continuous(trans = log_trans(), breaks = base_breaks(), labels = prettyNum) +
+  scale_y_continuous(trans = log_trans(), breaks = base_breaks(), labels = prettyNum) +
+  labs(fill = "Metabarcode size fraction (ul)") +  
+    labs(color = "Metabarcode size fraction (ul)") +
+    theme(legend.position = c(.45, .08), legend.direction="horizontal" , 
+          plot.margin = unit(c(0.6,0.1,0,0), "lines"), legend.key = element_rect(color = "transparent", fill = "transparent"))  # c(.22, .12)   ;  t = 0, r = 0, b = 0, l = 0
+ 
+# mala profile  
+  mpp<-ggplot(subset(DNA_all, area == "Profile"), aes(x=reads_per_sample,y=rich)) +
+    geom_point(color=c1) +
+   geom_smooth(method = "gam", fill=c1, color=c1) + # gam or loess
+    labs(y = "Richness (metabarcode)", x = "")  +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +
+    scale_x_continuous(trans = log_trans(), breaks = base_breaks(), labels = prettyNum) +
+     scale_y_continuous(trans = log_trans(), breaks = base_breaks(), labels = prettyNum) +
+    theme(plot.margin = unit(c(0.6,0.1,0,0), "lines"))
+
+# mala deep
+dpp<-mpp %+% subset(DNA_all, area == "Deep" & reads_per_sample < 50) +
+    labs(y = "", x = "DNA abundance (metagenome)")  
+#print(dpp)
+## combine
+p<- ggpubr::ggarrange(tp, mpp, dpp, #+ ggpubr::rremove("x.text"), 
+                  labels = c("A", "B", "C"),
+                  font.label = list(size = 10, face = "plain"),
+                  ncol = 1, nrow = 3,
+                  hjust=-5, vjust=1, align= "hv")  # smaler - right, smaller up
+                  #common.legend = TRUE, legend = "bottom")
+  print(p)
+## save  
+ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/comparison_2019/rich_abund_3cruises_loess.pdf"
+        , plot = p, width = 20, height = 30, units = "cm" )
+
+```
+
+
+
+
+
+
+
+
+
+
+

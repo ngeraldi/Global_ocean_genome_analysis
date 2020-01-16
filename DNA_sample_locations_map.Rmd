@@ -1,0 +1,316 @@
+---
+title: "DNA boxplot and depth plots, both metagenome and amplicon data"
+author: "Nathan R. Geraldi"
+date: "May 21, 2019"
+output: github_document
+---
+
+set table options
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## libraries
+```{r libraries, message=FALSE, warning=FALSE}
+library(RColorBrewer)
+library(tidyverse) 
+library(broom)
+#library(edgeR)
+library(corrplot)
+library(mapdata)
+#library(maps)
+#library(scales)## plot transparecny alpha(col, %)
+library(rgdal)
+
+#  install.packages("devtools")
+#  devtools::install_github("grunwaldlab/metacoder")
+
+```
+
+## functions
+```{r functions, message=FALSE, warning=FALSE}
+
+
+```
+
+
+## define universal variables
+```{r define_universal}
+stud_pat<-"Dammam"  # matches study specific title from pipe (begining of files).
+dir<-"/Users/geraldn/Dropbox/"
+out_file<-"Documents/KAUST/eDNA/R/pipe_summary"
+# export  to project folder
+export_file<-"Documents/KAUST/eDNA/R/csv/"
+
+# folder where scripts are
+wd_now<-"/Users/geraldn/Dropbox/Documents/KAUST/eDNA/R/projects/Global_ocean_genome_analysis"
+
+```
+
+## import misc
+```{r import_misc}
+## taxa conversions to compare net data
+taxa_DNA_net<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/taxa_table.xlsx", sheet=1)
+taxa_net_DNA<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/taxa_table.xlsx", sheet=2)
+
+# get ocean data  - used in "tidy 18s"
+geo<-read.table("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/Global_layers_oct18.csv", sep=",",header=T)
+geo1<-geo[,c(1,22)]# get lohg and ocean   names(geo)
+geo_ll<-geo[,c(2,3,6,7,22)]#   column 3 is station
+geo_ll<-geo_ll[!duplicated(geo_ll$Station),]
+geo_ll<-geo_ll[,-2]
+#
+```
+
+
+
+## 18s_prev_map
+```{r 18s_prev_map}
+Mdat<-data.table::fread('/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/groups/amplicon_Mal_metazoans.csv', sep = ',', header=T,stringsAsFactors=F)
+Tdat<-data.table::fread('/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/groups/amplicon_Tara_metazoans.csv', sep = ',', header=T,stringsAsFactors=F)
+#  unique(dat$class)   
+Tloc<- Tdat %>%   # names(Tloc)    unique(Tdat$DNAID)
+  distinct(Latitude,Latitude,Depth, .keep_all = T) %>% 
+  select(Sample.ID,Cruise.x,Station,Depth,Depth_region,Latitude,Longitude)
+#      rm(Tdat)
+Mloc<- Mdat %>%    # names(Mloc)
+  distinct(Latitude,Latitude,Depth, .keep_all = T) %>% 
+  select(Sample.ID,Cruise.x,Station,Depth,Depth_region,Latitude,Longitude)
+data1<-rbind(Tloc,Mloc)
+####  save only unique station and depth combinations,  export for global extraction
+#     data.table::fwrite(data1,"/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/amplicon_locations_all.csv",row.names=F, sep=",")
+Mloc_d<-Mloc[Mloc$Depth_region=="Deep",]
+Mloc_s<-Mloc[Mloc$Depth_region=="Surface",]
+Mloc_p<-Mloc[Mloc$Depth_region!="Surface" &  Mloc$Depth_region!="Deep" ,]
+```
+
+
+## metagenome
+```{r metagenome}
+
+# genome data from DMAP        
+dat_genome<-data.table::fread(file = '/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/DMAP_biomass_apr19.csv', sep = ',', header = TRUE)
+##   add column differentiat malaspina profile and deep
+dat_genome1<- dat_genome %>%   # names(dat_genome)      
+  mutate(pid=forcats::fct_recode(pid, "PID_50" ="pid50","PID_70" ="pid70","PID_90" ="pid90" )) %>% 
+  mutate(Depth = ifelse(Cruise == "TARA", Depth.env, Depth)) %>% 
+  group_by_at(vars(unique_ID:pid, Latitude,Longitude,Depth,phylum)) %>% # was sp_num in stats_source
+  summarize(reads=sum(reads)) %>% 
+  ungroup() %>% 
+  group_by_at(vars(unique_ID:pid)) %>% 
+  mutate(reads_sample=sum(reads)) %>% 
+  ungroup() %>% 
+  mutate(reads_percent=reads/reads_sample) %>% 
+  dplyr::rename(Phylum=phylum) 
+  # unique(dat_genome1$pid)
+  ## get oceans, but need to remove some samples without lat/lon
+ dat_genome_na<- dat_genome1 %>% # remove then bind back in after join-erro with na's
+    filter(is.na(Latitude))
+
+ dat_genome2<- dat_genome1 %>% # names(dat_genome2)
+    filter(complete.cases(Latitude)) %>% 
+    fuzzyjoin::geo_left_join(geo_ll, max_dist = 30)  %>% #  to get oceans, dist in miles
+    select(-Latitude.y,  -Longitude.y) %>% 
+    dplyr::rename(Latitude=Latitude.x , Longitude=Longitude.x)  %>% 
+    mutate(ocean=as.character(ocean)) %>%  #  unique(dat_genome2$ocean)
+    mutate(ocean=replace(ocean, ocean=="Antarctic","Southern Ocean")) %>% 
+    mutate(Latitude_abs=abs(Latitude)) %>% 
+    mutate(Latitude_cat=cut(Latitude_abs, breaks=c(-Inf,23.5,35, Inf), 
+                        labels=c("Tropical","Subtropical","Temperate"))) %>% 
+   bind_rows(dat_genome_na) %>% 
+   # remove NaN- only for samples with no hits
+   filter(!reads_percent=="NaN") 
+
+mes<- dat_genome2 %>% 
+  distinct(Latitude,Latitude,Depth,Cruise, area, ID.x, .keep_all = T)
+ #########
+  #       get filter catagories
+filcat<-data.frame(unique(dat_genome2$filter_size))
+colnames(filcat)[1] <- "filter_size"
+filcat$filter_size_cat<-c("0.2-3","1-20","1-20","0.2-3","0.2-3","1-20","0.1-0.22","0.2-3","0.2-3","0.2-3","")
+dat_genome2<-left_join(dat_genome2, filcat, by="filter_size")   #  unique(dat_genome2$filter_size_cat)
+##  get depth catagories
+dat_genome2$Depth_cat <- cut(dat_genome2$Depth, breaks=c(-Inf,11, 200, 1000, 2000, 3910, Inf), 
+                      labels=c("<10m","10-200m","200-1000m","1000-2000m","2000-3910m","3995-4020m"))
+##
+
+####     
+# limit data to uniqeu lat lon
+dat_genome3<-dat_genome2 %>% # names(dat_genome2)
+  distinct(Latitude,Latitude,Depth, .keep_all = T) %>% 
+  select(unique_ID:area,Depth,Latitude,Longitude, Latitude_abs:Latitude_cat)
+dat_genome3<-data.frame(dat_genome3)
+
+genloc_deep <-dat_genome3 %>% 
+  filter(Cruise=="Malaspina" & area=="deep")
+genloc_prof <-dat_genome3 %>% 
+  filter(Cruise=="Malaspina" & area=="prof")
+genloc_TARA <-dat_genome3 %>% 
+  filter(Cruise=="TARA" )
+summary(as.factor(genloc_TARA$filter_size))
+####  save only unique station and depth combinations,  export for global extraction
+#     data.table::fwrite(dat_genome3,"/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/genom_locations_all.csv",row.names=F, sep=",")
+
+```
+
+
+## net data
+Remove ? -- Yes
+```{r net_data}
+# overall biomass - don't need
+#mal_net_bio<-read.csv("/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomassZooplankton #Biomass Malaspina.csv")
+
+# abundance from Mariluz
+mal_net_abun<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/Zooplankton_Malaspina_abund.xlsx", sheet=1)
+mal_net_abun_depth_convert<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/Zooplankton_Malaspina_abund.xlsx", sheet=2)
+
+## biomass from Santiago, this sheet also has abundance
+mal_net_biomass<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/tow_biomass_ABDCIA_all_MALASPINA.xlsx", sheet=1)
+
+# biomass      names(mal_net_biomass)
+mal_net_biomass2 <- mal_net_biomass %>% 
+  dplyr::rename( "Station"="Estación","strata"  ="Estrato","Depth" ="Profundidad.(m)", "Chaetognatha"="Bio.Chaetognatha", "Copepoda"="Bio.Copepoda", "Euphausiids.Like"="Bio.Euphausiids.Like", "Gelatinous"="Bio.Gelatinous", "Other.Mesoz."="Bio.Other.Mesoz.") %>% 
+  separate(Depth, into=c("min_depth","max_depth"), sep="-", remove=TRUE, convert=TRUE) %>% 
+  gather(key=taxa, value=biomass, Chaetognatha:Other.Mesoz.) %>% 
+  mutate(biomass_percent=biomass/Bio.total) %>% 
+  mutate(taxa_j=taxa) %>% 
+  mutate(taxa_j=replace(taxa_j, taxa_j=="Euphausiids.Like","Arthropoda")) %>% 
+  mutate(taxa_j=replace(taxa_j, taxa_j=="Copepoda","Arthropoda"))
+
+# abudnance   #  names(mal_net_abun2)  mal_net_abun_depth_convert
+mal_net_abun2 <- mal_net_abun %>% 
+  gather(key=taxa, value=abundance_percent, Jellyfish:Meroplankton.Larvae)  %>% 
+  left_join(mal_net_abun_depth_convert) %>% 
+  left_join(taxa_net_DNA, by=c("taxa" = "abundance_taxa")) #  %>% 
+# ???
+
+```
+
+## maps
+```{r barplots}
+
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30', "black")
+
+base <- readOGR(dsn = "/Users/geraldn/Dropbox/Global_databases/naturalearthdata/ne_110m_land",
+                layer = "ne_110m_land") 
+base_color<-"gray"
+
+############################################################
+
+#par(mar=c(0,0,0,0),oma=c(0,2,0,0))#(bottom, left, top, right)  ## messes up projection
+lab1<-c("Tara samples", "Malaspina surface", "Malaspina profiles", "Malaspina deep") # lables for legend
+labpch<-c(4,1,124,45)  #pch for legend    124 2 for triangle    45 to short  150 nothing
+labcex<-c(.7,.6,.9,1)  #pch for legend
+labcex2<-c(1,1,.9,1)  #pch for legen
+labcol<-c("#fd8d3c","#a6bddb","#3690c0","#034e7b")  #pch for legend
+xlonlab<-c(-180,-90,0,90,180)
+ylonlab<-c(-90, -50,0,50, 90)
+ylonlab2<-c("",-50,0,50,"") # actual labels
+xlatpos<--182
+ylonpos<--91
+cexlet<-1
+xletpos<--190
+yletpos<-97
+###################### start plotting  ######################
+dev.off() 
+
+###  map 18s samples
+ybot<-0.50
+par(fig=c(0,0.80,ybot,1), mar=c(.1,.1,.1,.1), oma=c(2,3,2,0))  # ,mgp=c(0,.5,0)
+plot(base, col=base_color, border=base_color, xlim = c(-180,180),
+     ylim = c(-90,90), bg = "transparent", lwd=0.5, xpd=F)
+#map.axes(lty=1.2, las=1, tck=-0.008, ylim=c(-90,90))
+axis(2,las=2, pos=xlatpos, labels=ylonlab2,tck=-0.01, cex=.9, at = ylonlab, xpd=NA) # y-axis
+axis(1, las=1, pos=ylonpos, labels=F,tck=-0.01, cex=.9, at = xlonlab)# x-axis
+text(xletpos,yletpos, label="A", cex=cexlet, xpd=TRUE) 
+points(Tloc$Longitude, Tloc$Latitude, cex=.7, pch=labpch[1] , col=labcol[1])
+points(Mloc_s$Longitude, Mloc_s$Latitude, pch=labpch[2] , cex=.6, col=labcol[2])  # surface
+points(Mloc_p$Longitude, Mloc_p$Latitude, pch=labpch[3] , cex=.9, col=labcol[3])   # profiles
+points(Mloc_d$Longitude, Mloc_d$Latitude, pch=labpch[4] , cex=1, col=labcol[4])   # deep
+
+legend("topleft", inset=c(.0,-.1), legend=lab1, col=labcol, pch=labpch, pt.cex=labcex2, 
+        ncol=4, bty="n" , xpd=NA )   #-.2 for 2rows increase neg. inset to move away
+## y locations for par
+yp1<-0.53
+yp2<-0.95
+### start for lat profile
+par(fig=c(0.79,.905,yp1,yp2), mar=c(0,.5,0,1), new=TRUE,mgp=c(0,.4,0)) #(axis.title.position, axis.label.position, axis.line.position)
+h<-hist(data1$Latitude,plot=F)
+hh<-c(0,h$counts,0,0,0)  #  c(0,0,h$counts,0)
+barplot(axes=F,hh,width=1,horiz=T, beside=T,xlim=c(0,80), space=0, las=1,lwd=.01)   # names.arg = hh$mids
+axis(side=2, at=c(3,8,13), labels=c(-50,0,50),las=1, tck=-0.06)
+axis(side=1 ,las=1, at=c(0,40,80), labels=FALSE, tck=-0.06)
+box(lty=1.2)
+### start for depth profile
+par(fig=c(0.90,1,yp1,yp2), mar=c(0,.5,0,.5), new=TRUE,mgp=c(0,.4,0))
+h<-hist(data1$Depth,plot=F)
+hh<-c(h$counts)  #  c(0,0,h$counts,0)
+barplot(axes=F, rev(hh),width=1,horiz=T, beside=T,xlim=c(1,400), space=0, 
+        log="x", lwd=0.01)   # names.arg = hh$mids
+axis(side=1 ,las=1, at=c(1,10,200), labels=FALSE, tck=-0.06)
+axis(side=2 ,las=1, at=c(2,4,6,8), labels=rev(c(1,2,3,4)), tck=-0.06)
+box(lty=1.2)
+mtext("Depth (km)", side=3, line=-1.5, adj=.99,outer=TRUE,cex=1)
+mtext("Latitude", side=3, line=-1.5, adj=.865,outer=TRUE,cex=1)
+######################################################
+###  map genome samples
+#  par(mfcol=c(2,1), mar=c(.2,1,1,2), oma=c(8,3,0,0), xpd = NA) 
+ybot<-0.0
+par(fig=c(0,0.80,ybot,.50), new=TRUE)  # ,mgp=c(0,.5,0)
+plot(base, col=base_color, border=base_color, xlim = c(-180,180),
+     ylim = c(-90,90), bg = "transparent", lwd=0.5, xpd=F)
+#map.axes(lty=1.2, las=1, tck=-0.008, ylim=c(-90,90))
+axis(2,las=2, pos=xlatpos, labels=ylonlab2,tck=-0.01, cex=.9, at = ylonlab, xpd=NA) # y-axis
+axis(1, las=1, pos=ylonpos, labels=TRUE,tck=-0.01, cex=.9, at = xlonlab)# x-axis
+text(xletpos,yletpos, label="B", cex=cexlet, xpd=TRUE) 
+
+points(genloc_TARA$Longitude, genloc_TARA$Latitude, cex=.7, pch=labpch[1] , col=labcol[1])
+#points(Mloc_s$Longitude, Mloc_s$Latitude, pch=labpch[2] , cex=.6, col=labcol[2])  # surface
+points(genloc_prof$Longitude, genloc_prof$Latitude, pch=labpch[3] , cex=.9, col=labcol[3])   # profiles
+points(genloc_deep$Longitude, genloc_deep$Latitude, pch=labpch[4] , cex=1, col=labcol[4])   # deep
+
+## y locations for par
+yp1<-0.03
+yp2<-0.45
+### start for lat profile
+par(fig=c(0.79,.905,yp1,yp2), mar=c(0,.5,0,1), new=TRUE,mgp=c(0,.4,0)) #(axis.title.position, axis.label.position, axis.line.position)
+h<-hist(dat_genome3$Latitude,plot=F)
+hh<-c(0,h$counts,0,0,0)  #  c(0,0,h$counts,0)
+barplot(axes=F,hh,width=1,horiz=T, beside=T,xlim=c(0,80), space=0, las=1,lwd=.01)   # names.arg = hh$mids
+axis(side=2, at=c(3,8,13), labels=c(-50,0,50),las=1, tck=-0.06)
+axis(side=1 ,las=1, at=c(0,40,80), labels=c(0,40,80), tck=-0.06)
+box(lty=1.2)
+### start for depth profile
+par(fig=c(0.90,1,yp1,yp2), mar=c(0,.5,0,.5), new=TRUE,mgp=c(0,.4,0))
+h<-hist(dat_genome3$Depth,plot=F)
+hh<-c(h$counts)  #  c(0,0,h$counts,0)
+barplot(axes=F, rev(hh),width=1,horiz=T, beside=T,xlim=c(1,400), space=0, 
+        log="x", lwd=0.01)   # names.arg = hh$mids
+axis(side=1 ,las=1, at=c(1,10,200), labels=c(1,10,200), tck=-0.06)
+axis(side=2 ,las=1, at=c(2,4,6,8), labels=rev(c(1,2,3,4)), tck=-0.06)
+box(lty=1.2)
+mtext("Samples", SOUTH<-1, line=0.2, adj=.93,outer=TRUE,cex=1)
+#mtext("Depth (km)", side=3, line=-8.2, adj=.99,outer=TRUE,cex=1)
+#mtext("Latitude", side=3, line=-8.2, adj=.865,outer=TRUE,cex=1)
+
+
+## last additions
+mtext("Longitude", SOUTH<-1, line=0.2, adj=.39,outer=TRUE,cex=1)
+mtext("Latitude", WEST<-2, line=1.5, adj=0.5,outer=TRUE,cex=1)
+####  dev.off() 
+
+#  export  full screan line 1 inch right of apple on x and 2nd line down on right
+#  doesn't work, only ggplots
+#  ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/metagen_and_18s/DNA_maps_fig.pdf", plot = last_plot(), width = 8.42, height = 7.43, units = c("in"))
+
+
+## for checking location of lat.
+h<-hist(dat_genome3$Latitude,plot=F)
+h<-hist(dat_genome3$Depth,plot=F)
+hh<-c(h$counts)  #  c(0,0,h$counts,0)
+#barplot(hh,width=1,horiz=T, beside=T,xlim=c(1,400),log="x", space=0, las=1, names.arg = h$mids)   
+############
+
+
+```
+

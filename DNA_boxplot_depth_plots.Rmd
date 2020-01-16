@@ -1,0 +1,1432 @@
+---
+title: "DNA boxplot and depth plots, both metagenome and amplicon data"
+author: "Nathan R. Geraldi"
+date: "May 21, 2019"
+output: github_document
+---
+
+set table options
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## libraries
+```{r libraries, message=FALSE, warning=FALSE}
+library(RColorBrewer)
+library(tidyverse) 
+library(broom)
+#library(edgeR)
+library(corrplot)
+
+#  install.packages("devtools")
+#  devtools::install_github("grunwaldlab/metacoder")
+
+```
+
+## functions
+```{r functions, message=FALSE, warning=FALSE}
+error.bar <- function(x, y, upper, lower=upper, length=0.02,...){
+  if(length(x) != length(y) | length(y) !=length(lower) | length(lower) != length(upper))
+    stop("vectors must be same length")
+  arrows(x+upper,y, x-lower, y, angle=90, code=3, length=length, ...)
+}
+
+```
+
+
+## define universal variables
+```{r define_universal}
+stud_pat<-"Dammam"  # matches study specific title from pipe (begining of files).
+dir<-"/Users/geraldn/Dropbox/"
+out_file<-"Documents/KAUST/eDNA/R/pipe_summary"
+# export  to project folder
+export_file<-"Documents/KAUST/eDNA/R/csv/"
+
+# folder where scripts are
+wd_now<-"/Users/geraldn/Dropbox/Documents/KAUST/eDNA/R/projects/Global_ocean_genome_analysis"
+
+```
+
+## import misc
+```{r import_misc}
+## taxa conversions to compare net data
+taxa_DNA_net<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/taxa_table.xlsx", sheet=1)
+taxa_net_DNA<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/taxa_table.xlsx", sheet=2)
+
+# get ocean data  - used in "tidy 18s"
+geo<-read.table("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/Global_layers_oct18.csv", sep=",",header=T)
+geo1<-geo[,c(1,22)]# get lohg and ocean   names(geo)
+geo_ll<-geo[,c(2,3,6,7,22,13)]#   column 3 is station
+geo_ll<-geo_ll[!duplicated(geo_ll$Station),]
+geo_ll<-geo_ll[,-2]
+#
+```
+
+## import amplicon data
+this was from amplicon_phylums4.R 
+```{r}
+# set working directory where source script is
+setwd(wd_now)
+# use this script to import and clean data
+source("amplicon_stats_tara_source.R")
+pat<-c("Annelida","Arthropoda","Chordata","Cnidaria","Ctenophora","Echinodermata","Gastrotricha","Mollusca",
+       "Nematoda","Orthonectida","Platyhelminthes","Porifera","Rotifera","Sipuncula","Tardigrada","Urochordata","Chaetognatha",
+       "Craniata","Nemertea","Bryozoa","Hemichordata","Brachiopoda","Entoprocta","Cephalochordata","Entoprocta") 
+pat<-paste(pat, collapse = "|")
+### make ocean basins
+sdat<- dat_otu_rare$read_low_sp  
+ob_cat<-data.frame(unique(sdat$Locality.2))
+ob_cat$ocean_basin<-"Mediterranean Sea"
+ob_cat$ocean_basin[2]<-"Red Sea"
+ob_cat$ocean_basin[c(3,4,5)]<-"Indian Ocean"
+ob_cat$ocean_basin[c(7,8,10)]<-"Atlantic"
+ob_cat$ocean_basin[9]<-"Southern Ocean"
+ob_cat$ocean_basin[c(11:13)]<-"Pacific"
+ob_cat$ocean_basin[14]<-"Mediterranean Sea"
+names(ob_cat)[1]<-"Locality.2"
+######   tdat   sum to phylums  
+names(read_low)
+tdat1<- dat2 %>%   # 247160    names(dat2)
+  filter(pid>90) %>%  # only greater than 90 PID
+  group_by_at(vars(Sample.ID,Station:filter_size,OTU.LEVEL.SHANNON.DIVERSITY_from.Vargas:Locality.4,filter_size_cat,Phylum)) %>% # was sp_num in stats_source
+  summarize(reads=sum(reads),reads_rarified=sum(reads_rarified), reads_percent=sum(reads_percent), rich=length(which(percent.per.metazoan.reads>0))) %>% 
+  filter(complete.cases(Phylum)) %>% 
+  filter(Phylum != "")  %>% 
+  left_join(ob_cat)
+#  length(unique(tdat1$Station))
+tdat1<-data.frame(tdat1)
+## get reads per sample
+mes<-tdat1 %>% 
+  group_by(Sample.ID) %>% 
+  summarize(new_tot_reads=sum(reads))
+tdat2<-tdat1 %>% 
+  left_join(mes) %>% 
+  mutate(new_prop_reads=reads/new_tot_reads)
+
+##############################################################################################
+######   Mal data          ######################################################################################
+
+source("amplicon_stats_mal_source.R")
+names(dat)
+
+mdat1<- dat %>%   # 247160    names(mdat1)
+  #filter(DNAID=="DNA") %>% 
+  filter(pid_col>90) %>%  # only greater than 90 PID
+  group_by_at(vars(Sample.ID,DNAID,Station:filter_size,Phylum)) %>% # was sp_num in stats_source
+  summarize(rich=length(which(reads_percent>0)),reads=sum(reads),reads_rarified=sum(reads_rarified), reads_percent=sum(reads_percent) ) %>% 
+  filter(complete.cases(Phylum)) %>% 
+  filter(Phylum != "")
+#
+mdat1<-data.frame(mdat1)
+## get reads per sample
+mes<-mdat1 %>% 
+    group_by(Sample.ID) %>% 
+    summarize(new_tot_reads=sum(reads))
+mdat2<-mdat1 %>% 
+    left_join(mes) %>% 
+    mutate(new_prop_reads=reads/new_tot_reads)
+mes6<-mdat2[is.na(mdat2$Depth),]
+#Mdat$Depth_cat <- cut(Mdat$Depth, breaks=c(-Inf,10, 100,500 ,1000, 2000, 3000, Inf), 
+#                           labels=c("<10m","10-100m","100-500m","500-1000m","1000-2000m","2000-3000m",">3000m"))
+mdat2$Depth_cat <- cut(mdat2$Depth, breaks=c(-Inf,11, 200, 1000, 2000, 3910, Inf), 
+                      labels=c("<10m","10-200m","200-1000m","1000-2000m","2000-3910m","3995-4020m"))
+
+```
+
+## tidy 18s
+```{r tidy_18S}
+## set for both 18s and genome !!!!!!
+top10all<-c("Arthropoda","Cnidaria","Nematoda","Chordata","Ctenophora","Annelida","Placozoa","Mollusca", "Chaetognatha", "Tardigrada","Platyhelminthes")
+
+
+
+tara<-tdat2 %>%    #  names(tdat2)   unique(tdat10$Phylum)
+  select(Sample.ID,Cruise.x,Depth_region,filter_size_cat,Latitude,ocean_basin,Phylum,new_prop_reads, rich) %>% 
+  mutate(DNAID="DNA") 
+
+dat11<-mdat2 %>%    #  names(mdat2) names(geo1)    !!!!!!!!!
+  mutate(Cruise.x="Malaspina") %>% 
+  select(Sample.ID,Cruise.x,DNAID,Depth_cat,Latitude,Phylum,new_prop_reads,rich) %>% 
+  bind_rows(tara) %>% #  add TARA
+  left_join(geo_ll) %>% 
+  mutate(ocean=as.character(ocean)) %>%  
+  mutate(ocean2=ifelse(is.na(ocean), ocean_basin, ocean)) %>% 
+  mutate(ocean2=replace(ocean2, ocean2=="Antarctic","Southern Ocean")) %>% 
+  mutate(Latitude_abs=abs(Latitude)) %>% 
+  mutate(Latitude_cat=cut(Latitude_abs, breaks=c(-Inf,23.5,35, Inf), 
+                        labels=c("Tropical","Subtropical","Temperate")))  #   catagory
+####    names(dat11)
+mess<- dat11 %>% # names(dat11)  unique(dat11$Phylum)
+  filter(DNAID=="DNA") %>% 
+  group_by(Phylum) %>% 
+  summarize(reads=mean(new_prop_reads,na.rm = T), med=median(new_prop_reads,na.rm = T)) %>% 
+  arrange(desc(reads))
+##  quick look at reads
+tss<-sum(mess$reads)
+tp10<-sum(mess$reads[1:10])/tss # first 10 have 0.999 % or reads
+tpat<-mess$Phylum[1:15] ## top 10 phylums
+# top nine of both-12 phylua
+top10pat<-mess$Phylum[1:10]
+  ###  limit datat to top 10 overall
+Amp_10 <- dat11 %>% 
+  filter(grepl(paste(top10all, collapse="|"), Phylum)) %>% 
+  mutate(Phylum=factor(Phylum, levels=top10all)) 
+
+top10pat18s<-top10pat
+
+
+```
+
+
+## metagenome
+```{r metagenome}
+
+# genome data from DMAP        
+dat_genome<-data.table::fread(file = '/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/DMAP_biomass_apr19.csv', sep = ',', header = TRUE)
+##   add column differentiat malaspina profile and deep
+dat_genome1<- dat_genome %>%   # names(dat_genome)      
+  mutate(pid=forcats::fct_recode(pid, "PID_50" ="pid50","PID_70" ="pid70","PID_90" ="pid90" )) %>% 
+  mutate(Depth = ifelse(Cruise == "TARA", Depth.env, Depth)) %>% 
+  group_by_at(vars(unique_ID:pid, Latitude,Longitude,Depth,phylum)) %>% # was sp_num in stats_source
+  summarize(reads=sum(reads)) %>% 
+  ungroup() %>% 
+  group_by_at(vars(unique_ID:pid)) %>% 
+  mutate(reads_sample=sum(reads)) %>% 
+  ungroup() %>% 
+  mutate(reads_percent=reads/reads_sample) %>% 
+  dplyr::rename(Phylum=phylum) 
+  # unique(dat_genome1$pid)
+  ## get oceans, but need to remove some samples without lat/lon
+ dat_genome_na<- dat_genome1 %>% # remove then bind back in after join-erro with na's
+    filter(is.na(Latitude))
+
+ dat_genome2<- dat_genome1 %>% # names(dat_genome2)
+    filter(complete.cases(Latitude)) %>% 
+    fuzzyjoin::geo_left_join(geo_ll, max_dist = 30)  %>% #  to get oceans, dist in miles
+    select(-Latitude.y,  -Longitude.y) %>% 
+    dplyr::rename(Latitude=Latitude.x , Longitude=Longitude.x)  %>% 
+    mutate(ocean=as.character(ocean)) %>%  #  unique(dat_genome2$ocean)
+    mutate(ocean=replace(ocean, ocean=="Antarctic","Southern Ocean")) %>% 
+    mutate(Latitude_abs=abs(Latitude)) %>% 
+    mutate(Latitude_cat=cut(Latitude_abs, breaks=c(-Inf,23.5,35, Inf), 
+                        labels=c("Tropical","Subtropical","Temperate"))) %>% 
+   bind_rows(dat_genome_na) %>% 
+   # remove NaN- only for samples with no hits
+   filter(!reads_percent=="NaN") 
+
+mes<- dat_genome %>% 
+  filter(Cruise=="TARA", phylum=="Mollusca")
+ #########
+  #       get filter catagories
+filcat<-data.frame(unique(dat_genome2$filter_size))
+colnames(filcat)[1] <- "filter_size"
+filcat$filter_size_cat<-c("0.2-3","1-20","1-20","0.2-3","0.2-3","1-20","0.1-0.22","0.2-3","0.2-3","0.2-3","")
+dat_genome2<-left_join(dat_genome2, filcat, by="filter_size")   #  unique(dat_genome2$filter_size_cat)
+##  get depth catagories
+dat_genome2$Depth_cat <- cut(dat_genome2$Depth, breaks=c(-Inf,11, 200, 1000, 2000, 3910, Inf), 
+                      labels=c("<10m","10-200m","200-1000m","1000-2000m","2000-3910m","3995-4020m"))
+##
+# get order of phyla most to least
+top10patMG <-dat_genome2 %>% 
+  group_by(Phylum) %>% 
+  summarize(m=mean(reads_percent),sum=sum(reads_percent)) %>% 
+  arrange(desc(m)) %>% 
+  top_n(10) %>% 
+  pull(Phylum) 
+####     
+# limit data to top 10 and search
+dat_genome3<-dat_genome2 %>%   # unique(sum1$fac)  names(dat_phyl)  names(dat_genome2)
+  filter(Phylum %in% top10patMG) %>%   # limit to top ten phyla    top10patMG  or top10all
+  mutate(Phylum=factor(Phylum, levels=top10patMG))  %>% 
+  # limit gene domain    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  filter(gene_domain=="ec4")  %>%   # unique(dat_genome2$gene_domain)
+   # limit to target DMAP filter
+  filter(pid=="PID_70")  #  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+dat_genome3<-data.frame(dat_genome3)
+
+mes<-dat_genome3 
+  
+```
+
+
+## net data
+Remove ? -- Yes
+```{r net_data}
+# overall biomass - don't need
+#mal_net_bio<-read.csv("/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomassZooplankton #Biomass Malaspina.csv")
+
+# abundance from Mariluz
+mal_net_abun<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/Zooplankton_Malaspina_abund.xlsx", sheet=1)
+mal_net_abun_depth_convert<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/Zooplankton_Malaspina_abund.xlsx", sheet=2)
+
+## biomass from Santiago, this sheet also has abundance
+mal_net_biomass<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/tow_biomass_ABDCIA_all_MALASPINA.xlsx", sheet=1)
+
+# biomass      names(mal_net_biomass)
+mal_net_biomass2 <- mal_net_biomass %>% 
+  dplyr::rename( "Station"="Estación","strata"  ="Estrato","Depth" ="Profundidad.(m)", "Chaetognatha"="Bio.Chaetognatha", "Copepoda"="Bio.Copepoda", "Euphausiids.Like"="Bio.Euphausiids.Like", "Gelatinous"="Bio.Gelatinous", "Other.Mesoz."="Bio.Other.Mesoz.") %>% 
+  separate(Depth, into=c("min_depth","max_depth"), sep="-", remove=TRUE, convert=TRUE) %>% 
+  gather(key=taxa, value=biomass, Chaetognatha:Other.Mesoz.) %>% 
+  mutate(biomass_percent=biomass/Bio.total) %>% 
+  mutate(taxa_j=taxa) %>% 
+  mutate(taxa_j=replace(taxa_j, taxa_j=="Euphausiids.Like","Arthropoda")) %>% 
+  mutate(taxa_j=replace(taxa_j, taxa_j=="Copepoda","Arthropoda"))
+
+# abudnance   #  names(mal_net_abun2)  mal_net_abun_depth_convert
+mal_net_abun2 <- mal_net_abun %>% 
+  gather(key=taxa, value=abundance_percent, Jellyfish:Meroplankton.Larvae)  %>% 
+  left_join(mal_net_abun_depth_convert) %>% 
+  left_join(taxa_net_DNA, by=c("taxa" = "abundance_taxa")) #  %>% 
+# ???
+
+```
+
+## barplots bar adn meta
+plot percents ofphyla for both 18S and metagenomes
+NOT USED IN MANUSCIPT !!!!!!
+```{r barplots_per}
+lfil<-c(".5-5","5-20","20-200","180-2000")
+n<-16
+cc1<-rainbow(n)
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30', "black")
+space<-c(1:11) #
+cc1<-cc1[1:length(space)]
+yylim<-c(1,100)
+tttlx<-11  ## location of plot label
+tttly<-45
+tttletx<-11    # location iof letter
+tttlety<-80
+ypp<-0.65
+bxlwd<-1.5  # bos line width
+mean_pch<-19 # pch of mean 
+mean_cex<-1.3 #size o mean circle 
+
+
+############################################################
+#### plot    names(dat1)
+par(mfcol=c(6,3), mar=c(.2,1,1,2), oma=c(8,3,0,0), xpd = NA) 
+########
+
+############################################################
+############################################################
+# start column 1  Amplicon data
+############################################################
+####    TARA
+rr<-c(7) # response in col  !!!!
+r<-1  ### number of levels
+# tara ocean surface - comparable to mala
+pdat<-Amp_10 %>%   ## unique(dat11$Cruise.x)  names(pdat) unique(pdat$filter_size_cat) 
+  filter(Cruise.x=="TARA") %>% 
+  filter(Depth_region=="SRF") %>% 
+  filter(filter_size_cat==".5-5" )
+j<-rr
+fac1<-pdat$Phylum
+resp<-((pdat[,j])*100)+1
+b<-boxplot(resp~fac1, outline=F,
+           col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   
+box(lwd=1.2)
+axis(2,las=2)
+axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+#add means
+q<-tapply(resp,list(fac1),mean,na.rm=T)
+s=as.vector(q)
+points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+text(tttlx,tttly, label="Tara surface 18S", cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+text(tttletx,tttlety, label="A", cex=1)    
+#mtext(text="b",side=1, line=-13.0,cex=cx, adj=.08, font=2)
+############################################################
+# malaspina surface  2nd plot
+pdat<-Amp_10 %>% 
+  filter(Cruise.x=="Malaspina") %>% 
+  filter(grepl("M",Sample.ID)) %>% 
+  filter(DNAID=="DNA") 
+ j<-rr
+fac1<-pdat$Phylum
+resp<-((pdat[,j])*100)+1
+b<-boxplot(resp~fac1, outline=F,
+           col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   
+box(lwd=1.2)
+axis(2,las=2)
+axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+#add means
+q<-tapply(resp,list(fac1),mean,na.rm=T)
+s=as.vector(q)
+points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+text(tttlx,tttly, label="Malaspina surface 18S", cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+text(tttletx,tttlety, label="B", cex=1)  
+###################################################################################
+#########################################
+### malaspina profile - DNA then RNA     names(dat11)
+pdat<-Amp_10 %>% 
+  filter(Cruise.x=="Malaspina") %>% 
+  filter(!(grepl("deep",Sample.ID) | grepl("M",Sample.ID)))  # names(dat1)
+fac3<-factor(pdat$DNAID)
+ll<-levels(fac3)
+r<-length(ll)
+#  i<-1  ;j<-29
+for (i in 1:r){  # filters
+  for (j in rr){    #resp in rows
+    pdat1<-pdat[fac3==ll[i],]  #  levels(dat1$Depth_cat)
+    fac1<-pdat1$Phylum
+    #fac2<-dat11$filter_crit_cat
+    resp<-((pdat1[,j])*100)+1
+    b<-boxplot(resp~fac1, outline=F,
+               col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   # , log="y"
+    if (i==3) {
+      box(lwd=1.2)
+      axis(2,las=2)
+      axis(1, las=2, at=space, labels=top10pat,tck=-0.01, cex=.9)
+    }
+    else {
+      box()
+      axis(2,las=2)
+      axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+    }
+    #add means
+    q<-tapply(resp,list(fac1),mean,na.rm=T)
+    s=as.vector(q)
+    points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+    lln<-c("Profile 18S","Profile 18S RNA")
+    text(tttlx,tttly, label=lln[i], cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+    ttlet<-c("C","D")
+    text(tttletx,tttlety, label=ttlet[i], cex=1)  
+  }
+}
+
+############################################################
+# malaspina deep
+pdat<-Amp_10 %>% 
+  filter(Cruise.x=="Malaspina") %>% 
+  filter(grepl("deep",Sample.ID)) %>% 
+  filter(DNAID=="DNA") 
+j<-rr
+fac1<-pdat$Phylum
+resp<-((pdat[,j])*100)+1
+b<-boxplot(resp~fac1, outline=F,
+           col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   
+box(lwd=1.2)
+axis(2,las=2)
+axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+#add means
+q<-tapply(resp,list(fac1),mean,na.rm=T)
+#  med<-tapply(resp,list(fac1),median,na.rm=T)
+#  er<-tapply(resp,list(fac1),plotrix::std.error,na.rm=T)
+s=as.vector(q)
+points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+text(tttlx,tttly, label="Malaspina deep 18S", cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+text(tttletx,tttlety, label="E", cex=1)  
+############################################################
+# ALL  18S  #
+j<-rr
+pdat<-Amp_10 %>% 
+  filter(DNAID=="DNA") 
+fac1<-pdat$Phylum
+resp<-((pdat[,j])*100)+1
+b<-boxplot(resp~fac1, outline=F,
+           col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd =bxlwd, log="y")   
+box(lwd=1.2)
+axis(2,las=2)
+axis(1, las=2, at=space, labels=NA,tck=-0.01, cex=.9)
+text(x=space, y=rep(ypp,10), labels=top10all, adj=1, srt=90, xpd = NA)
+#add means
+q<-tapply(resp,list(fac1),mean,na.rm=T)
+s=as.vector(q)
+points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+text(tttlx,tttly, label="All 18S", cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+text(tttletx,tttlety, label="F", cex=1) 
+#####################################################################################
+
+############################################################
+# start column 2  metagenomes
+############################################################
+top10pat<-top10patMG
+####    TARA
+rr<-c(16) # column of response variable  !!!!
+r<-1  ### number of levels
+# tara ocean surface - comparable to mala
+pdat<-dat_genome3 %>%   ## unique(dat11$Cruise.x)  names(dat_genome3) unique(pdat$filter_size) 
+  filter(Cruise=="TARA") %>% 
+  filter(Depth < 200) %>% # was Depth_region=="SRF" for 18s, hist(pdat$Depth)
+  filter(filter_size_cat=="0.2-3" )  # .5-5 for 18s
+
+j<-rr
+fac1<-pdat$Phylum
+resp<-((pdat[,j])*100)+1
+b<-boxplot(resp~fac1, outline=F,
+           col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   
+box(lwd=1.2)
+axis(2,las=2)
+axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+#add means
+q<-tapply(resp,list(fac1),mean,na.rm=T)
+s=as.vector(q)
+points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+text(tttlx,tttly, label="Tara surface meta", cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+text(tttletx,tttlety, label="G", cex=1)    
+#mtext(text="b",side=1, line=-13.0,cex=cx, adj=.08, font=2)
+############################################################
+# no malaspina surface 2nd coloumn 2nd plot
+frame()  
+############################################################
+# malaspina profile 2nd column  3rd plot
+pdat<-dat_genome3 %>% 
+  filter(Cruise=="Malaspina") %>% 
+  filter(area=="prof") %>%    # unique(dat_genome3$area)
+  filter(filter_size_cat=="0.2-3" ) 
+ j<-rr
+fac1<-pdat$Phylum
+resp<-((pdat[,j])*100)+1
+b<-boxplot(resp~fac1, outline=F,
+           col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   
+box(lwd=1.2)
+axis(2,las=2)
+axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+#add means
+q<-tapply(resp,list(fac1),mean,na.rm=T)
+s=as.vector(q)
+points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+text(tttlx,tttly, label="Malaspina profile meta", cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+text(tttletx,tttlety, label="H", cex=1)  
+############################################################
+# no metagenomw RND 2nd coloumn 4th plot
+frame()  
+############################################################
+###################################################################################
+### metagenome malaspina deep  2nd column 5th plot
+pdat<-dat_genome3 %>% 
+  filter(Cruise=="Malaspina") %>% 
+  filter(area=="deep") %>%    # unique(dat_genome3$area)
+  filter(filter_size_cat=="0.2-3" ) 
+j<-rr
+fac1<-pdat$Phylum
+resp<-((pdat[,j])*100)+1
+b<-boxplot(resp~fac1, outline=F,
+           col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   
+box(lwd=1.2)
+axis(2,las=2)
+axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+#add means
+q<-tapply(resp,list(fac1),mean,na.rm=T)
+#  med<-tapply(resp,list(fac1),median,na.rm=T)
+#  er<-tapply(resp,list(fac1),plotrix::std.error,na.rm=T)
+s=as.vector(q)
+points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+text(tttlx,tttly, label="Malaspina deep meta", cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+text(tttletx,tttlety, label="I", cex=1)  
+############################################################
+# ALL  metagenome 2nd col th plot  #
+j<-rr
+pdat<-dat_genome3  %>% 
+  filter(filter_size_cat=="0.2-3" ) 
+
+fac1<-pdat$Phylum
+resp<-((pdat[,j])*100)+1
+b<-boxplot(resp~fac1, outline=F,
+           col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd =bxlwd, log="y")   
+box(lwd=1.2)
+axis(2,las=2)
+axis(1, las=2, at=space, labels=NA,tck=-0.01, cex=.9)
+text(x=space, y=rep(ypp,10), labels=top10all, adj=1, srt=90, xpd = NA)
+#add means
+q<-tapply(resp,list(fac1),mean,na.rm=T)
+s=as.vector(q)
+points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+text(tttlx,tttly, label="All metagenome", cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+text(tttletx,tttlety, label="J", cex=1) 
+#####################################################################################
+#####################################################################################
+#   start plot is line 287
+
+#####################################################################################
+###   mal ocean s- 3rd 1st three      unique(pdat$ocean)
+pdat<-dat_genome3 %>% 
+   filter(complete.cases(ocean))  %>% 
+   mutate(ocean_basin=factor(ocean,levels=c("Atlantic",
+                       "Pacific","Indian"))) %>% 
+    mutate(ocean_basin = forcats::fct_recode(ocean_basin, "Indian Ocean"="Indian",
+                               "Pacific Ocean"="Pacific","Atlantic Ocean"="Atlantic")) %>% 
+  filter(filter_size_cat=="0.2-3" ) 
+
+fac3<-factor(pdat$ocean_basin)  # ocean_basin or ocean2
+ll<-levels(fac3)
+r<-length(ll)
+#  i<-1  ;j<-29
+for (i in 1:r){  # filters
+  for (j in rr){    #resp in rows
+    pdat1<-pdat[fac3==ll[i],]  #  levels(dat1$Depth_cat)
+    fac1<-pdat1$Phylum
+    #fac2<-dat11$filter_crit_cat
+    resp<-((pdat1[,j])*100)+1
+    b<-boxplot(resp~fac1, outline=F,
+               col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   # , log="y"
+    if (i==r) {
+      box(lwd=1.2)
+      axis(2,las=2)
+      axis(1, las=2, at=space, labels=F, tck=-0.01, cex=.9) #
+      #text(x=space, y=rep(ypp,10), labels=top10pat, adj=1, srt=90, xpd = NA)
+    }
+    else {
+      box()
+      axis(2,las=2)
+      axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+    }
+    #add means
+    q<-tapply(resp,list(fac1),mean,na.rm=T)
+    s=as.vector(q)
+    points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+    lln<-ll
+    text(tttlx,tttly, label=lln[i], cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+    ttlet<-c("K","L","M")
+    text(tttletx,tttlety, label=ttlet[i], cex=1)  
+  }
+}
+#####################################################################################
+###   lat zones,  oceans- 3rd column  last 3 plots
+pdat<-dat_genome3 %>% # names(dat11)
+  filter(complete.cases(Latitude_cat)) %>%  # levels(pdat$Latitude_cat)
+  filter(filter_size_cat=="0.2-3" ) 
+
+fac3<-factor(pdat$Latitude_cat)  # ocean_basin or ocean2
+ll<-levels(fac3)
+ll2<-levels(pdat$Latitude_cat)
+r<-length(ll)
+#  i<-1  ;j<-29
+for (i in 1:r){  # filters
+  for (j in rr){    #resp in rows
+    pdat1<-pdat[fac3==ll[i],]  #  levels(dat1$Depth_cat)
+    fac1<-pdat1$Phylum
+    #fac2<-dat11$filter_crit_cat
+    resp<-((pdat1[,j])*100)+1
+    b<-boxplot(resp~fac1, outline=F,
+               col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   # , log="y"
+    if (i==r) {
+      box(lwd=1.2)
+      axis(2,las=2)
+      axis(1, las=2, at=space, labels=F, tck=-0.01, cex=.9) #
+      text(x=space, y=rep(ypp,10), labels=top10all, adj=1, srt=90, xpd = NA)
+    }
+    else {
+      box()
+      axis(2,las=2)
+      axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+    }
+    #add means
+    q<-tapply(resp,list(fac1),mean,na.rm=T)
+    s=as.vector(q)
+    points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+    lln<-ll2
+    text(tttlx,tttly, label=lln[i], cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+    ttlet<-c("N","O","P")
+    text(tttletx,tttlety, label=ttlet[i], cex=1)  
+  }
+}
+
+
+#####################################################################################
+# at end add titlas
+cqq<-.8
+l11<-.2
+mtext("Percent of reads per sample", 2,las=0,line=1.7, cex=cqq, at=.5 ,outer=TRUE)
+mtext("Phylum", 1,las=0,line=6, cex=cqq, at=.5 ,outer=TRUE)
+
+```
+
+
+
+
+## barplots genome
+percents of phyla DNA from metagenome - fig 3 in manuscript
+```{r barplots_gen}
+lfil<-c(".5-5","5-20","20-200","180-2000")
+n<-16
+cc1<-rainbow(n)
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30', "black")
+space<-c(1:10) #
+cc1<-cc1[1:length(space)]
+yylim<-c(1,100)
+tttlx<-11  ## location of plot label
+tttly<-60
+tttletx<-10    # location iof letter
+tttlety<-90
+ypp<-0.65
+bxlwd<-1.5  # bos line width
+mean_pch<-19 # pch of mean 
+mean_cex<-1.3 #size o mean circle 
+ylabat<-c(1,2,6,11,21,51,101)  # need to trick for y label - no 0s and added 1 below
+ylab<-ylabat-1
+
+
+############################################################
+#### plot    names(dat1)
+par(mfcol=c(4,3), mar=c(.2,1,1,2), oma=c(8,3,0,0), xpd = NA) 
+########
+
+
+############################################################
+# start column 1  metagenomes
+############################################################
+top10pat<-top10patMG # top10patMG
+####    TARA
+rr<-c(16) # column of response variable  !!!!
+r<-1  ### number of levels
+# tara ocean surface - comparable to mala
+pdat<-dat_genome3 %>%   ## unique(dat11$Cruise.x)  names(dat_genome3) unique(pdat$filter_size) 
+  filter(Cruise=="TARA") %>% 
+  filter(Depth < 200) %>% # was Depth_region=="SRF" for 18s, hist(pdat$Depth)
+  filter(filter_size_cat=="0.2-3" )  # .5-5 for 18s
+
+j<-rr
+fac1<-pdat$Phylum
+resp<-((pdat[,j])*100)+1
+b<-boxplot(resp~fac1, outline=F,
+           col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   
+box(lwd=1.2)
+axis(2,las=2, at=ylabat , labels= ylab)
+axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+#add means
+q<-tapply(resp,list(fac1),mean,na.rm=T)
+s=as.vector(q)
+points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+text(tttlx,tttly, label="Tara surface", cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+text(tttletx,tttlety, label="A", cex=1)    
+#mtext(text="b",side=1, line=-13.0,cex=cx, adj=.08, font=2)
+
+############################################################
+# malaspina profile 2nd column  3rd plot
+pdat<-dat_genome3 %>% 
+  filter(Cruise=="Malaspina") %>% 
+  filter(area=="prof") %>%    # unique(dat_genome3$area)
+  filter(filter_size_cat=="0.2-3" ) 
+ j<-rr
+fac1<-pdat$Phylum
+resp<-((pdat[,j])*100)+1
+b<-boxplot(resp~fac1, outline=F,
+           col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   
+box(lwd=1.2)
+axis(2,las=2, at=ylabat , labels= ylab)
+axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+#add means
+q<-tapply(resp,list(fac1),mean,na.rm=T)
+s=as.vector(q)
+points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+text(tttlx,tttly, label="Malaspina profile", cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+text(tttletx,tttlety, label="B", cex=1)  
+
+############################################################
+###################################################################################
+### metagenome malaspina deep 
+pdat<-dat_genome3 %>% 
+  filter(Cruise=="Malaspina") %>% 
+  filter(area=="deep") %>%    # unique(dat_genome3$area)
+  filter(filter_size_cat=="0.2-3" ) 
+j<-rr
+fac1<-pdat$Phylum
+resp<-((pdat[,j])*100)+1
+b<-boxplot(resp~fac1, outline=F,
+           col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   
+box(lwd=1.2)
+axis(2,las=2, at=ylabat , labels= ylab)
+axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+#add means
+q<-tapply(resp,list(fac1),mean,na.rm=T)
+#  med<-tapply(resp,list(fac1),median,na.rm=T)
+#  er<-tapply(resp,list(fac1),plotrix::std.error,na.rm=T)
+s=as.vector(q)
+points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+text(tttlx,tttly, label="Malaspina deep", cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+text(tttletx,tttlety, label="C", cex=1)  
+############################################################
+# ALL  metagenome th plot  #
+j<-rr
+pdat<-dat_genome3  %>% 
+  filter(filter_size_cat=="0.2-3" ) 
+
+fac1<-pdat$Phylum
+resp<-((pdat[,j])*100)+1
+b<-boxplot(resp~fac1, outline=F,
+           col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd =bxlwd, log="y")   
+box(lwd=1.2)
+axis(2,las=2, at=ylabat , labels= ylab)
+axis(1, las=2, at=space, labels=NA,tck=-0.01, cex=.9)
+text(x=space, y=rep(ypp,10), labels=top10pat, adj=1, srt=90, xpd = NA)
+#add means
+q<-tapply(resp,list(fac1),mean,na.rm=T)
+s=as.vector(q)
+points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+text(tttlx,tttly, label="All metagenome", cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+text(tttletx,tttlety, label="D", cex=1) 
+#####################################################################################
+#####################################################################################
+#   start plot is line 287
+
+#####################################################################################
+###   mal ocean s- 3rd 1st three      unique(pdat$ocean)
+pdat<-dat_genome3 %>% 
+   filter(complete.cases(ocean))  %>% 
+   mutate(ocean_basin=factor(ocean,levels=c("Atlantic",
+                       "Pacific","Indian"))) %>% 
+    mutate(ocean_basin = forcats::fct_recode(ocean_basin, "Indian Ocean"="Indian",
+                               "Pacific Ocean"="Pacific","Atlantic Ocean"="Atlantic")) %>% 
+  filter(filter_size_cat=="0.2-3" ) 
+
+fac3<-factor(pdat$ocean_basin)  # ocean_basin or ocean2
+ll<-levels(fac3)
+r<-length(ll)
+#  i<-1  ;j<-29
+for (i in 1:r){  # filters
+  for (j in rr){    #resp in rows
+    pdat1<-pdat[fac3==ll[i],]  #  levels(dat1$Depth_cat)
+    fac1<-pdat1$Phylum
+    #fac2<-dat11$filter_crit_cat
+    resp<-((pdat1[,j])*100)+1
+    b<-boxplot(resp~fac1, outline=F,
+               col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   # , log="y"
+    if (i==r) {
+      box(lwd=1.2)
+      axis(2,las=2, at=ylabat , labels= ylab)
+      axis(1, las=2, at=space, labels=F, tck=-0.01, cex=.9) #
+      text(x=space, y=rep(ypp,10), labels=top10pat, adj=1, srt=90, xpd = NA)
+    }
+    else {
+      box()
+      axis(2,las=2, at=ylabat , labels= ylab)
+      axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+    }
+    #add means
+    q<-tapply(resp,list(fac1),mean,na.rm=T)
+    s=as.vector(q)
+    points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+    lln<-ll
+    text(tttlx,tttly, label=lln[i], cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+    ttlet<-c("E","F","G")
+    text(tttletx,tttlety, label=ttlet[i], cex=1)  
+  }
+}
+########
+frame()
+#####################################################################################
+###   lat zones,  oceans- 3rd column  last 3 plots
+pdat<-dat_genome3 %>% # names(dat11)
+  filter(complete.cases(Latitude_cat)) %>%  # levels(pdat$Latitude_cat)
+  filter(filter_size_cat=="0.2-3" ) 
+
+fac3<-factor(pdat$Latitude_cat)  # ocean_basin or ocean2
+ll<-levels(fac3)
+ll2<-levels(pdat$Latitude_cat)
+r<-length(ll)
+#  i<-1  ;j<-29
+for (i in 1:r){  # filters
+  for (j in rr){    #resp in rows
+    pdat1<-pdat[fac3==ll[i],]  #  levels(dat1$Depth_cat)
+    fac1<-pdat1$Phylum
+    #fac2<-dat11$filter_crit_cat
+    resp<-((pdat1[,j])*100)+1
+    b<-boxplot(resp~fac1, outline=F,
+               col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   # , log="y"
+    if (i==r) {
+      box(lwd=1.2)
+      axis(2,las=2, at=ylabat , labels= ylab)
+      axis(1, las=2, at=space, labels=F, tck=-0.01, cex=.9) #
+      text(x=space, y=rep(ypp,10), labels=top10pat, adj=1, srt=90, xpd = NA)
+    }
+    else {
+      box()
+      axis(2,las=2, at=ylabat , labels= ylab)
+      axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+    }
+    #add means
+    q<-tapply(resp,list(fac1),mean,na.rm=T)
+    s=as.vector(q)
+    points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+    lln<-ll2
+    text(tttlx,tttly, label=lln[i], cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+    ttlet<-c("H","I","J")
+    text(tttletx,tttlety, label=ttlet[i], cex=1)  
+  }
+}
+
+#####################################################################################
+# at end add titlas
+cqq<-.8
+l11<-.2
+mtext("Percent of reads per sample", 2,las=0,line=1.7, cex=cqq, at=.5 ,outer=TRUE)
+mtext("Phylum", 1,las=0,line=6, cex=cqq, at=.5 ,outer=TRUE)
+
+```
+
+
+## metagen depth plot
+metagenome sequnces of phyla through depth
+fig 2C in manucript
+```{r depth_plots}
+##################################
+## get combined order of phym and reorder factors in dataframes
+# levels(dat_genome3$Phylum)
+# levels(dat11$Phylum)
+top10pat_all<-c("Arthropoda","Cnidaria","Nematoda","Placozoa","Tardigrada","Chordata","Ctenophora","Annelida","Mollusca")
+dat_genome_a<-dat_genome2 %>%   # unique(sum1$fac)  names(dat_genome_a) names(dat_genome2)
+  filter(Phylum %in% top10patMG) %>%   # limit to top ten phyla
+  mutate(Phylum=factor(Phylum, levels=top10patMG))  %>% 
+  filter(Cruise=="Malaspina") %>% 
+    filter(filter_size_cat=="0.2-3" ) %>% 
+  filter(area=="prof") %>% # use both deep and profile!!!!!!!!!!!!
+    # limit gene domain    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  filter(gene_domain=="ec4")  %>%   # unique(dat_genome2$gene_domain)
+   # limit to target DMAP filter
+  filter(pid=="PID_70") %>%  #  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  filter(complete.cases(Depth_cat)) %>% 
+  group_by(Depth_cat,Phylum) %>% 
+  summarize(mean=mean(reads_percent,na.rm=T),median=median(reads_percent,na.rm=T)
+            ,n(),se=plotrix::std.error(reads_percent))
+
+########################################
+### plot set up set up colors and factors
+cc1<-c("black",'#543005','#8c510a','#bf812d','#dfc27d','#c7eae5','#80cdc1','#35978f','#01665e'
+       ,'#003c30')
+space<-c(1:9) # number of phylums !!
+cc1<-cc1[1:length(space)]
+fac3<-factor(dat_genome_a$Depth_cat)
+ll<-levels(fac3)
+#  get numbers for depth_cat
+Dep_num <-c(5,110,500,1500,2500,4000)  # 
+dep2<-data.frame(cbind(ll,Dep_num),stringsAsFactors = F)
+names(dep2)[1]<-"Depth_cat"
+dep2$Dep_num<-as.numeric(dep2$Dep_num)
+# add color
+depcol<-data.frame(cbind(top10pat_all,cc1),stringsAsFactors = F)
+depcol$pch<-c(0:4,0:3)
+names(depcol)[1]<-"Phylum"
+
+yylim<-c(4057,0)
+xxlim<-c(1,80)
+
+##################################################################################################
+###############################   start plotting    !!!!!!
+
+##################################################################################################
+###############################  plot
+    par(mfcol=c(1,1),mar=c(0,.5,1,.5), oma=c(1,4,3,9)) # ,
+
+##########################################################
+
+##   begin set up for metagenome  plot
+### at depth_num and color for plot
+pdat<-dat_genome_a %>% 
+    left_join(dep2) %>% 
+    left_join(depcol)
+pdat<-data.frame(pdat)
+xxlim<-c(1,80)
+rr<-3 # response in col  !!!!  reads_percent
+r<-length(ll)
+#  names(pdat)
+pdat$xx<-pdat$Dep_num
+pdat$xxx<-jitter(pdat$xx,2)
+pdat$resp<-((pdat[,rr])*100)+1 
+pdat$er<-((pdat$se)*100)+1 
+pdat$cc<-scales::alpha(pdat$cc1,1)
+pdat$cc2<-scales::alpha(pdat$cc1,0.4)
+pdat$pch2<-pdat$pch
+###  metagenome plot
+    plot(pdat$xxx~pdat$resp, col=pdat$cc, axes=F,ylim=yylim,xlim=xxlim, pch=pdat$pch2,
+         ylab="",xlab="",cex=1.5, lwd=2)   # log="x", 
+      axis(2,las=2,tck=-0.05, labels = TRUE)
+      axis(3, las=1,tck=-0.05, cex=.9)
+# error bars
+      error.bar(pdat$resp,pdat$xxx,pdat$er, col=pdat$cc2)
+#  make lines to connect phylums   i=1
+      for (i in 1:length(ll)){
+        pdat2<-pdat[pdat$Phylum==top10pat[i],]
+      lines(x=pdat2$resp,y=pdat2$xxx,col=pdat2$cc1,type = "l")
+      }
+# add letter
+      # letter
+      tttletx<--13
+      tttlety<- -450
+     text(tttletx,tttlety, label="C", cex=1) 
+ ### add label and color for depth xone
+     tcol<-c('#eff3ff','#bdd7e7','#6baed6','#3182bd','#08519c', "black")
+     tlab<-c("Surface","Photic","Mesopelagic","Upper Bathypelagic", "Lower Bathypelagic", "Abyssopelagic")
+     tgap<-c(-50,50,200,1000,2000,4000,4250)
+
+     lef<-72 # 90 # lef,ri  norm, 75, 85 log  90,110
+     ri<-83
+     i<-1  ## updated
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",113), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-2
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",113), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-3
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",113), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-4
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",143), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), border=tcol[i], fill=tcol[i], col=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-5
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",230), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-6
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",21.5), cex=0.5, justify=c('l') , leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     #  y=top start, textlist-make number smaller and bottom will be shorter
+     box(lwd=1.2)
+    #text(tttlx,tttly, label=ll[i], cex=1)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))  
+        
+#######################################
+## final additions
+# legends
+     legx<-85
+      legend(x=legx, y= 0,legend=tlab, col=tcol, pch=15, bty='n',title="Depth zone",
+            y.intersp = 1,xpd = NA)
+      legend(x=legx, y= 1500,legend=depcol$Phylum, col=depcol$cc1, pch=depcol$pch, bty='n',
+             title="Phylum", y.intersp = 1,xpd = NA)
+    mtext("% of metazoan sequences",side=3,line=1.5,at= .5 , outer = TRUE)
+    mtext("Depth (m)",side=2,line=3, outer = TRUE)
+
+#####################################################################################
+    #   save    7.36 and 6.65 pdf in genome plots
+    
+```
+
+## relationships from benthos
+check how metagenomes change wiht dist from depth
+No clear relationship, not mentioned in manuscript
+```{r depth_plots}
+##################################
+## get combined order of phym and reorder factors in dataframes
+# levels(dat_genome3$Phylum)
+# levels(dat11$Phylum)
+top10pat_all<-c("Arthropoda","Cnidaria","Nematoda","Placozoa","Tardigrada","Chordata","Ctenophora","Annelida","Mollusca")
+dat_genome_d<-dat_genome2 %>%   # unique(sum1$fac)  names(dat_genome_a) names(dat_genome2)
+  filter(Phylum %in% top10patMG) %>%   # limit to top ten phyla
+  mutate(Phylum=factor(Phylum, levels=top10patMG))  %>% 
+    filter(filter_size_cat=="0.2-3" ) %>% 
+    # limit gene domain    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  filter(gene_domain=="ec4")  %>%   # unique(dat_genome2$gene_domain)
+   # limit to target DMAP filter
+  filter(pid=="PID_70") %>%  #  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  filter(complete.cases(Depth_cat)) %>% 
+##  specific to this plot
+  filter(Phylum=="Nematoda") %>%
+  mutate(dist_bot=((global_depth)*-1) - Depth)
+
+
+##################################################################################################
+###############################   start plotting    !!!!!!
+
+p<-ggplot(dat_genome_d, aes(x = dist_bot, y = reads_percent, size=Depth)) +
+  geom_point() +
+  geom_smooth(method='lm') +
+  geom_smooth(method='loess') +
+  # between facets
+  facet_grid(~Cruise, space = "fixed", scales="free") +  # , scales = "fixed"
+
+  labs(y = "Percent sequences", x = "Distance to benthos (m)")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) + # 
+  #theme(legend.position="none") +
+  theme(panel.grid.major = element_blank())  # remove grids
+  #theme(panel.spacing = unit(0.8, "lines"))  # increase margins
+
+
+#  export
+ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/comparison_2019/DMAP_dist_benthos_pf7_9plot_filt_0.2-3.pdf", plot = p)
+
+
+    #   save    7.36 and 6.65 pdf in genome plots
+    
+```
+
+## 2 depth plots
+plot both 18s and metagenome DNA abudancne
+old not used in manuscript
+```{r depth_plots}
+##################################
+## get combined order of phym and reorder factors in dataframes
+# levels(dat_genome3$Phylum)
+# levels(dat11$Phylum)
+top10pat_all<-c("Arthropoda","Cnidaria","Nematoda","Placozoa","Tardigrada","Chordata","Ctenophora","Annelida","Mollusca")
+dat_genome_a<-dat_genome2 %>%   # unique(sum1$fac)  names(dat_genome_a) names(dat_genome2)
+  filter(Phylum %in% top10pat_all) %>%   # limit to top ten phyla
+  mutate(Phylum=factor(Phylum, levels=top10pat_all))  %>% 
+  filter(Cruise=="Malaspina") %>% 
+    filter(filter_size_cat=="0.2-3" ) %>% 
+  filter(area=="prof") %>% # use both deep and profile!!!!!!!!!!!!
+    # limit gene domain    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  filter(gene_domain=="ec4")  %>%   # unique(dat_genome2$gene_domain)
+   # limit to target DMAP filter
+  filter(pid=="PID_70") %>%  #  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  filter(complete.cases(Depth_cat)) %>% 
+  group_by(Depth_cat,Phylum) %>% 
+  summarize(mean=mean(reads_percent,na.rm=T),median=median(reads_percent,na.rm=T)
+            ,n(),se=plotrix::std.error(reads_percent))
+
+##   18S  
+Amp_a <- dat11 %>% 
+  filter(Phylum%in% top10pat_all) %>% 
+  mutate(Phylum=factor(Phylum, levels=top10pat_all)) %>% 
+  filter(Cruise.x=="Malaspina") %>% 
+  filter(DNAID=="DNA") %>% 
+  filter(!(grepl("deep",Sample.ID) | grepl("M",Sample.ID))) %>% # filte !!!!!!! comparible to metagenome
+  filter(complete.cases(Depth_cat)) %>% 
+  group_by(Depth_cat,Phylum) %>% 
+  summarize(mean=mean(new_prop_reads,na.rm=T),median=median(new_prop_reads,na.rm=T)
+            ,n(),se=plotrix::std.error(new_prop_reads))
+########################################
+### plot set up set up colors and factors
+cc1<-c("black",'#543005','#8c510a','#bf812d','#dfc27d','#c7eae5','#80cdc1','#35978f','#01665e'
+       ,'#003c30')
+space<-c(1:9) # number of phylums !!
+cc1<-cc1[1:length(space)]
+fac3<-factor(Amp_a$Depth_cat)
+ll<-levels(fac3)
+#  get numbers for depth_cat
+Dep_num <-c(5,110,500,1500,2500,4000)  # 
+dep2<-data.frame(cbind(ll,Dep_num),stringsAsFactors = F)
+names(dep2)[1]<-"Depth_cat"
+dep2$Dep_num<-as.numeric(dep2$Dep_num)
+# add color
+depcol<-data.frame(cbind(top10pat_all,cc1),stringsAsFactors = F)
+depcol$pch<-c(0:4,0:3)
+names(depcol)[1]<-"Phylum"
+
+yylim<-c(4070,0)
+xxlim<-c(1,80)
+
+##################################################################################################
+###############################   start plotting    !!!!!!
+
+##################################################################################################
+###############################  plot
+    par(mfcol=c(1,2),mar=c(0,.5,1,.5), oma=c(1,4,3,9)) # ,
+
+##########################################################
+##   begin set up for 18s plot
+### at depth_num and color for plot
+pdat<-Amp_a %>% 
+    left_join(dep2) %>% 
+    left_join(depcol)
+pdat<-data.frame(pdat)
+
+xxlim<-c(1,80)
+rr<-3 # response in col  !!!!  reads_percent
+r<-length(ll)
+#  names(pdat)
+pdat$xx<-pdat$Dep_num
+pdat$xxx<-jitter(pdat$xx,2)
+pdat$resp<-((pdat[,rr])*100)+1 
+pdat$er<-((pdat$se)*100)+1 
+pdat$cc<-scales::alpha(pdat$cc1,1)
+pdat$cc2<-scales::alpha(pdat$cc1,0.4)
+pdat$pch2<-pdat$pch
+### start    18S plot
+    plot(pdat$xxx~pdat$resp, col=pdat$cc, axes=F,ylim=yylim,xlim=xxlim, pch=pdat$pch2,
+         ylab="",xlab="",cex=1.5, lwd=2)   # log="x", 
+      axis(2,las=2,tck=-0.05)
+      axis(3, las=1,tck=-0.05, cex=.9)
+# error bars
+      error.bar(pdat$resp,pdat$xxx,pdat$er, col=pdat$cc2)
+#  make lines to connect phylums   i=1
+      for (i in 1:length(ll)){
+        pdat2<-pdat[pdat$Phylum==top10pat[i],]
+      lines(x=pdat2$resp,y=pdat2$xxx,col=pdat2$cc1,type = "l")
+      }
+
+# letter
+      tttletx<-70
+      tttlety<- -80
+     text(tttletx,tttlety, label="A", cex=1) 
+ ### add label and color for depth xone
+     tcol<-c('#eff3ff','#bdd7e7','#6baed6','#3182bd','#08519c', "black")
+     tlab<-c("Surface","Photic","Mesopelagic","Upper Bathypelagic", "Lower Bathypelagic", "Abyssopelagic")
+     tgap<-c(-50,50,200,1000,2000,4000,4250)
+
+     lef<-75 # 90 # lef,ri  norm, 75, 85 log  90,110
+     ri<-85
+     i<-1  ## updated
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",113), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-2
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",113), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-3
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",113), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-4
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",143), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), border=tcol[i], fill=tcol[i], col=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-5
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",278), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-6
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",29), cex=0.5, justify=c('l') , leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     box(lwd=1.2)
+    #text(tttlx,tttly, label=ll[i], cex=1)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+     
+##########################################################
+##   begin set up for metagenome  plot
+### at depth_num and color for plot
+pdat<-dat_genome_a %>% 
+    left_join(dep2) %>% 
+    left_join(depcol)
+pdat<-data.frame(pdat)
+xxlim<-c(1,80)
+rr<-3 # response in col  !!!!  reads_percent
+r<-length(ll)
+#  names(pdat)
+pdat$xx<-pdat$Dep_num
+pdat$xxx<-jitter(pdat$xx,2)
+pdat$resp<-((pdat[,rr])*100)+1 
+pdat$er<-((pdat$se)*100)+1 
+pdat$cc<-scales::alpha(pdat$cc1,1)
+pdat$cc2<-scales::alpha(pdat$cc1,0.4)
+pdat$pch2<-pdat$pch
+###  metagenome plot
+    plot(pdat$xxx~pdat$resp, col=pdat$cc, axes=F,ylim=yylim,xlim=xxlim, pch=pdat$pch2,
+         ylab="",xlab="",cex=1.5, lwd=2)   # log="x", 
+      axis(2,las=2,tck=-0.05, labels = "")
+      axis(3, las=1,tck=-0.05, cex=.9)
+# error bars
+      error.bar(pdat$resp,pdat$xxx,pdat$er, col=pdat$cc2)
+#  make lines to connect phylums   i=1
+      for (i in 1:length(ll)){
+        pdat2<-pdat[pdat$Phylum==top10pat[i],]
+      lines(x=pdat2$resp,y=pdat2$xxx,col=pdat2$cc1,type = "l")
+      }
+# add letter
+     text(tttletx,tttlety, label="B", cex=1) 
+ ### add label and color for depth xone
+     tcol<-c('#eff3ff','#bdd7e7','#6baed6','#3182bd','#08519c', "black")
+     tlab<-c("Surface","Photic","Mesopelagic","Upper Bathypelagic", "Lower Bathypelagic", "Abyssopelagic")
+     tgap<-c(-50,50,200,1000,2000,4000,4250)
+
+     lef<-75 # 90 # lef,ri  norm, 75, 85 log  90,110
+     ri<-85
+     i<-1  ## updated
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",113), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-2
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",113), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-3
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",113), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-4
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",143), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), border=tcol[i], fill=tcol[i], col=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-5
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",278), cex=0.5, justify=c('l'), leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     i<-6
+     plotrix::textbox(x=c(lef,ri), y=tgap[c(i)], textlist=rep("L",29), cex=0.5, justify=c('l') , leading=0.5, box=T,
+                      adj=c(0,0), col=tcol[i], border=tcol[i], fill=tcol[i], density=NULL,
+                      angle=45, margin=0)
+     box(lwd=1.2)
+    #text(tttlx,tttly, label=ll[i], cex=1)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))  
+        
+#######################################
+## final additions
+# legends
+     legx<-85
+      legend(x=legx, y= 0,legend=tlab, col=tcol, pch=15, bty='n',title="Depth zone",
+            y.intersp = 1,xpd = NA)
+      legend(x=legx, y= 1500,legend=depcol$Phylum, col=depcol$cc1, pch=depcol$pch, bty='n',
+             title="Phylum", y.intersp = 1,xpd = NA)
+    mtext("% of metazoan sequences",side=3,line=1.5,at= .5 , outer = TRUE)
+    mtext("Depth (m)",side=2,line=3.0, outer = TRUE)
+
+#####################################################################################
+    #   save     depth_18s_90_genec4_70_prof
+    
+```
+
+# filter plots
+plot 18s by filer
+No longer used and produces error need to check
+```{r filter_plot}
+
+
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30', "black")
+space<-c(1:11) #
+    cc1<-cc1[1:length(space)]
+    yylim<-c(1,100)
+    tttlx<-11  ## location of plot label
+    tttly<-45
+    tttletx<-11    # location iof letter
+    tttlety<-80
+    ypp<-0.65
+    bxlwd<-1.5  # bos line width
+    mean_pch<-19 # pch of mean 
+    mean_cex<-1.3 #size o mean circle 
+#######################################################################
+#######################################################################
+    par(mfcol=c(3,3), mar=c(.2,1,1,2), oma=c(8,3,0,0), xpd = NA) 
+    
+
+##   tara 18s data, first column
+pdat<-Amp_10 %>%   ## unique(dat11$Cruise.x)  names(dat1) unique(pdat$filter_size_cat) 
+  filter(Cruise.x=="TARA") %>% 
+  filter(!filter_size_cat=="5-20") %>%   # because half the samples of others
+  mutate(filter_size_cat=factor(filter_size_cat, levels=c(".5-5","20-200","180-2000"))) %>% 
+  group_by(Latitude,Longitude,Depth_region) %>% 
+  mutate(filters_location=n()) %>% # 1872
+  ungroup() %>% 
+  filter(filters_location==27) # 1431
+pdat<-data.frame(pdat)
+# summary(pdat$filter_size_cat)    !!!!!!   53 locations   !!!!!!!!
+    rr<-7
+    fac2<-pdat$filter_size_cat
+    ll<-levels(fac2)
+    lfil<-ll
+    
+## start plot loop
+for (i in 1:length(ll)){  # filters
+    pdat2<-pdat[pdat$filter_size_cat==ll[i],]
+    fac1<-pdat2$Phylum
+
+    resp<-((pdat2[,rr])*100)+1
+    b<-boxplot(resp~fac1, outline=F,
+               col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   # , log="y"
+    if (i==3) {
+      box(lwd=1.2)
+      axis(2,las=2)
+      axis(1, las=2, at=space, labels=top10all,tck=-0.01, cex=.9)
+    }
+    else {
+      box()
+      axis(2,las=2)
+      axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+    }
+    #add means
+    q<-tapply(resp,list(fac1),mean,na.rm=T)
+    s=as.vector(q)
+    points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+
+    text(tttlx,tttly, label=bquote( .(lfil[i])*mu*m), cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+    ttlet<-c("A","B","C","D")
+    text(tttletx,tttlety, label=ttlet[i], cex=1)  
+}
+  
+##   tara genome, second column
+pdat<-dat_genome3 %>%   ## unique(dat11$Cruise.x)  names(dat_genome3) unique(pdat$filter_size_cat) 
+  filter(Cruise=="TARA") %>% 
+  mutate(filter_size_cat=factor(filter_size_cat)) %>% 
+  filter(!filter_size_cat=="1-20") %>%   # because half the samples of others
+  mutate(filter_size_cat=factor(filter_size_cat, levels=c("0.1-0.22","0.2-3"))) %>% 
+  group_by(Latitude,Longitude,Depth) %>% 
+  mutate(filters_location=n()) %>% # 
+  ungroup() %>% 
+  filter(filters_location==20) # 300     15 samples !!!!!!!!!
+pdat<-data.frame(pdat)
+# summary(pdat$filter_size_cat)
+    rr<-16  # resp column
+    fac2<-pdat$filter_size_cat
+    ll<-levels(fac2)
+    lfil<-ll # for text filter size
+## start plot loop
+for (i in 1:length(ll)){  # filters
+    pdat2<-pdat[pdat$filter_size_cat==ll[i],]
+    fac1<-pdat2$Phylum
+
+    resp<-((pdat2[,rr])*100)+1
+    b<-boxplot(resp~fac1, outline=F,
+               col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   # , log="y"
+    if (i==2) {
+      box(lwd=1.2)
+      axis(2,las=2)
+      axis(1, las=2, at=space, labels=top10all,tck=-0.01, cex=.9)
+    }
+    else {
+      box()
+      axis(2,las=2)
+      axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+    }
+    #add means
+    q<-tapply(resp,list(fac1),mean,na.rm=T)
+    s=as.vector(q)
+    points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+
+    text(tttlx,tttly, label=bquote( .(lfil[i])*mu*m), cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+    ttlet<-c("D","E")
+    text(tttletx,tttlety, label=ttlet[i], cex=1)  
+}
+ 
+   
+frame() 
+
+ ##  Malaspina genome, second column
+pdat<-dat_genome3 %>%   ## unique(dat11$Cruise.x)  names(dat_genome3) unique(pdat$filter_size_cat) 
+  filter(Cruise=="Malaspina") %>% 
+  mutate(filter_size_cat=factor(filter_size_cat)) %>% 
+  mutate(filter_size_cat=factor(filter_size_cat, levels=c("0.2-3","1-20"))) %>% 
+  group_by(Latitude,Longitude,Depth) %>% 
+  mutate(filters_location=n()) %>% # 
+  ungroup() %>% 
+  filter(filters_location==20) # 740     !!!! 37 smaples
+pdat<-data.frame(pdat)
+# summary(pdat$filter_size_cat)
+    rr<-16  # resp column
+    fac2<-pdat$filter_size_cat
+    ll<-levels(fac2)
+    lfil<-ll # for text filter size
+## start plot loop
+for (i in 1:length(ll)){  # filters
+    pdat2<-pdat[pdat$filter_size_cat==ll[i],]
+    fac1<-pdat2$Phylum
+
+    resp<-((pdat2[,rr])*100)+1
+    b<-boxplot(resp~fac1, outline=F,
+               col="white",axes=F,at=space,border=cc1,ylim=yylim,boxlwd = bxlwd, log="y")   # , log="y"
+    if (i==2) {
+      box(lwd=1.2)
+      axis(2,las=2)
+      axis(1, las=2, at=space, labels=top10all,tck=-0.01, cex=.9)
+    }
+    else {
+      box()
+      axis(2,las=2)
+      axis(1, las=1, padj=-1, at=space, labels=F,tck=-0.01, cex=.9)
+    }
+    #add means
+    q<-tapply(resp,list(fac1),mean,na.rm=T)
+    s=as.vector(q)
+    points(space,s,pch=mean_pch,col=cc1,cex=mean_cex)
+
+    text(tttlx,tttly, label=bquote( .(lfil[i])*mu*m), cex=1, pos=2)    #expression(mu * "ml")   bquote("Significance level is" ~ alpha == .(obj$alpha))
+    ttlet<-c("F","G")
+    text(tttletx,tttlety, label=ttlet[i], cex=1)  
+}
+    
+    
+    
+      
+    cqq<-.8
+    l11<-.2
+    mtext("Percent of sequences per sample", 2,las=0,line=1.7, cex=cqq, at=.5 ,outer=TRUE)
+    mtext("Phylum", 1,las=0,line=6, cex=cqq, at=.5 ,outer=TRUE) 
+    
+    
+
+
+```
+
+

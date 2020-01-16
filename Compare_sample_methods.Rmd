@@ -1,0 +1,965 @@
+---
+title: "biomass_compare"
+author: "Nathan R. Geraldi"
+date: "April 6, 2019"
+output: github_document
+---
+
+set table options
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## libraries
+```{r libraries, message=FALSE, warning=FALSE}
+library(RColorBrewer)
+library(tidyverse) 
+library(broom)
+#library(edgeR)
+library(corrplot)
+library(lme4)
+library(lmerTest)
+
+#  install.packages("devtools")
+#  devtools::install_github("grunwaldlab/metacoder")
+
+```
+
+## functions
+```{r functions, message=FALSE, warning=FALSE}
+# function to remove rows with n number of NA's
+delete.na <- function(DF, n=0) {
+  DF[rowSums(is.na(DF)) <= n,]
+}
+
+# Specify alpha as a percentage:
+colorRampAlpha <- function(..., n, alpha) {
+   colors <- colorRampPalette(...)(n)
+   paste(colors, sprintf("%x", ceiling(255*alpha)), sep="")
+}
+
+```
+
+
+## define universal variables
+```{r define_universal}
+stud_pat<-"Dammam"  # matches study specific title from pipe (begining of files).
+dir<-"/Users/geraldn/Dropbox/"
+out_file<-"Documents/KAUST/eDNA/R/pipe_summary"
+# export  to project folder
+export_file<-"Documents/KAUST/eDNA/R/csv/"
+
+```
+
+## import taxa t
+```{r taxa_table}
+## taxa conversions to make data comparable
+taxa_DNA_net<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/taxa_table.xlsx", sheet=1)
+taxa_net_DNA<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/taxa_table.xlsx", sheet=2)
+```
+
+
+
+## metagenome
+```{r metagenome}
+
+# genome data from DMAP        
+dat_genome<-data.table::fread(file = '/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/DMAP_biomass_apr19.csv', sep = ',', header = TRUE)
+##   add column differentiat malaspina profile and deep
+dat_genome<- dat_genome %>%   # names(dat_genome)
+  mutate(cruise_area="Tara") %>% 
+  #mutate(cruise_area=if_else(grepl("MP", ID.x), "Malaspina profiles", cruise_area)) %>% 
+  #mutate(cruise_area=if_else(grepl("BATHY", ID.x), "Malaspina deep", cruise_area)) %>% 
+  #mutate(cruise_area=factor(cruise_area, levels=c("Tara","Malaspina profiles","Malaspina deep"))) %>% 
+  mutate(pid=forcats::fct_recode(pid, "PID_50" ="pid50","PID_70" ="pid70","PID_90" ="pid90" )) %>% 
+
+  group_by_at(vars(unique_ID:pid,Depth,phylum)) %>% # was sp_num in stats_source
+  summarize(reads=sum(reads)) %>% 
+  ungroup() %>% 
+  group_by_at(vars(unique_ID:pid)) %>% 
+  mutate(reads_sample=sum(reads)) %>% 
+  ungroup() %>% 
+  mutate(reads_percent=reads/reads_sample) %>% 
+  filter(Cruise != "TARA") %>% 
+  dplyr::rename(Phylum=phylum) %>% 
+  left_join(taxa_DNA_net, by=c("Phylum" = "DNA_taxa"))
+#  names(dat)   levels(dat$pid)
+  #       get filter catagories
+filcat<-data.frame(unique(dat_genome$filter_size))
+colnames(filcat)[1] <- "filter_size"
+filcat$filter_size_cat<-c("0.2-3","1-20","1-20","0.2-3","")
+dat_genome<-left_join(dat_genome, filcat, by="filter_size")   #  unique(dat_genome2$filter_size_cat)
+
+#dat_genome<- dat_genome %>% 
+ # filter(filter_size_cat=="0.2-3")
+```
+
+
+
+
+## Mala 18S
+
+```{r mala_18S}
+#  !!  malaspina 18S only one filter, 0.2-3   !!!!!!!!!!!!
+########################################################################################################
+#source("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/R/projects/Global_ocean_genome_analysis/amplicon_stats_tara_source.R")
+pat<-c("Annelida","Arthropoda","Chordata","Cnidaria","Ctenophora","Echinodermata","Gastrotricha","Mollusca",
+       "Nematoda","Orthonectida","Platyhelminthes","Porifera","Rotifera","Sipuncula","Tardigrada","Urochordata","Chaetognatha", "Craniata","Nemertea","Bryozoa","Hemichordata","Brachiopoda","Entoprocta","Cephalochordata","Entoprocta") 
+pat<-paste(pat, collapse = "|")
+pat_arth<-c("Malacostraca","Maxillopoda","Ostracoda")
+pat_arth<-paste(pat, collapse = "|")
+
+source("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/R/projects/Global_ocean_genome_analysis/amplicon_stats_mal_source.R")
+names(dat)
+## save so don't overwrite
+dat_18s<-dat
+
+dat_arth<- dat %>%   # 247160    names(mdat1)
+  #filter(DNAID=="DNA") %>% 
+  filter(pid_col>90) %>%  # only greater than 90 PID
+  filter(Phylum == "Arthropoda") %>% 
+  group_by_at(vars(Sample.ID,DNAID,Station:filter_size)) %>% # was sp_num in stats_source
+  summarize(reads=sum(reads),reads_rarified=sum(reads_rarified), reads_percent=sum(reads_percent)
+            , rich=length(which(reads>0)))
+#   unique(dat_18s$filter_size)
+
+#  90 used for all analysis
+dat_18S_phy_90<- dat_18s %>%  #  **   # names(dat)
+  filter(pid_col>=90, DNAID=="DNA") %>% #  **
+  filter(grepl(pat, Phylum)) %>% 
+  # recalc % reads
+  group_by_at(vars(Sample.ID,Station:Depth,Cruise.x)) %>%
+  mutate(reads_sample_metaz=sum(reads)) %>% 
+  ungroup() %>% 
+  mutate(reads_percent=reads/reads_sample_metaz) %>% 
+  #sum by phylum
+  group_by_at(vars(Sample.ID,Station:Depth,Cruise.x,Phylum)) %>% # was sp_num in stats_source
+  summarize(reads=sum(reads),reads_rarified=sum(reads_rarified), reads_percent=sum(reads_percent) ) %>% 
+  arrange(Station,Depth) %>% 
+  ungroup() %>% 
+  select(Station,Depth,Sample.ID,Phylum, reads_percent) %>% 
+  left_join(taxa_DNA_net, by=c("Phylum" = "DNA_taxa")) %>% 
+  dplyr::rename(metabarcode_PID_90=reads_percent) #  **
+
+# pid 80 for comparison
+dat_18S_phy_80<- dat_18s %>% #  **      # names(dat)
+  filter(pid_col>=80, DNAID=="DNA") %>% #  **
+  filter(grepl(pat, Phylum)) %>% 
+  # recalc % reads
+  group_by_at(vars(Sample.ID,Station:Depth,Cruise.x)) %>%
+  mutate(reads_sample_metaz=sum(reads)) %>% 
+  ungroup() %>% 
+  mutate(reads_percent=reads/reads_sample_metaz) %>% 
+  #sum by phylum
+  group_by_at(vars(Sample.ID,Station:Depth,Cruise.x,Phylum)) %>% # was sp_num in stats_source
+  summarize(reads=sum(reads),reads_rarified=sum(reads_rarified), reads_percent=sum(reads_percent) ) %>% 
+  arrange(Station,Depth) %>% 
+  ungroup() %>% 
+  select(Station,Depth,Sample.ID,Phylum, reads_percent) %>% 
+  left_join(taxa_DNA_net, by=c("Phylum" = "DNA_taxa")) %>% 
+  dplyr::rename(metabarcode_PID_80=reads_percent)    #  **
+
+# pid 70 for comparison
+dat_18S_phy_70<- dat_18s %>% #  **      # names(dat)
+  filter(pid_col>=70, DNAID=="DNA") %>% #  **
+  filter(grepl(pat, Phylum)) %>% 
+  # recalc % reads
+  group_by_at(vars(Sample.ID,Station:Depth,Cruise.x)) %>%
+  mutate(reads_sample_metaz=sum(reads)) %>% 
+  ungroup() %>% 
+  mutate(reads_percent=reads/reads_sample_metaz) %>% 
+  #sum by phylum
+  group_by_at(vars(Sample.ID,Station:Depth,Cruise.x,Phylum)) %>% # was sp_num in stats_source
+  summarize(reads=sum(reads),reads_rarified=sum(reads_rarified), reads_percent=sum(reads_percent) ) %>% 
+  arrange(Station,Depth) %>% 
+  ungroup() %>% 
+  select(Station,Depth,Sample.ID,Phylum, reads_percent) %>% 
+  left_join(taxa_DNA_net, by=c("Phylum" = "DNA_taxa")) %>% 
+  dplyr::rename(metabarcode_PID_70=reads_percent)    #  **
+
+#  export if needed 
+#write.csv(mdat1,file="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/malaspina_zooplankton_sp.csv") 
+#
+#Mdat$Depth_cat <- cut(Mdat$Depth, breaks=c(-Inf,10, 100,500 ,1000, 2000, 3000, Inf), 
+#                           labels=c("<10m","10-100m","100-500m","500-1000m","1000-2000m","2000-3000m",">3000m"))
+#mdat2$Depth_cat <- cut(mdat2$Depth, breaks=c(-Inf,11, 200, 1000, 2000, 3910, Inf), labels=c("<10m","10-200m","200-1000m","1000-2000m","2000-3910m","3995-4020m"))
+
+
+```
+
+## net data
+
+```{r net_data}
+# overall biomass - don't need
+#mal_net_bio<-read.csv("/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomassZooplankton #Biomass Malaspina.csv")
+
+# abundance from Mariluz
+mal_net_abun<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/Zooplankton_Malaspina_abund.xlsx", sheet=1)
+mal_net_abun_depth_convert<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/Zooplankton_Malaspina_abund.xlsx", sheet=2)
+
+## biomass from Santiago, this sheet also has abundance
+mal_net_biomass<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Global_databases/DMAP/tow_biomass/tow_biomass_ABDCIA_all_MALASPINA.xlsx", sheet=1)
+
+# biomass      names(mal_net_biomass)
+mal_net_biomass2 <- mal_net_biomass %>% 
+  dplyr::rename( "Station"="Estación","strata"  ="Estrato","Depth" ="Profundidad.(m)", "Chaetognatha"="Bio.Chaetognatha", "Copepoda"="Bio.Copepoda", "Euphausiids.Like"="Bio.Euphausiids.Like", "Gelatinous"="Bio.Gelatinous", "Other.Mesoz."="Bio.Other.Mesoz.") %>% 
+  separate(Depth, into=c("min_depth","max_depth"), sep="-", remove=TRUE, convert=TRUE) %>% 
+  gather(key=taxa, value=biomass, Chaetognatha:Other.Mesoz.) %>% 
+  mutate(biomass_percent=biomass/Bio.total) %>% 
+  mutate(taxa_j=taxa) %>% 
+  mutate(taxa_j=replace(taxa_j, taxa_j=="Euphausiids.Like","Arthropoda")) %>% 
+  mutate(taxa_j=replace(taxa_j, taxa_j=="Copepoda","Arthropoda"))
+
+# abudnance   #  names(mal_net_abun2)  mal_net_abun_depth_convert
+mal_net_abun2 <- mal_net_abun %>% 
+  gather(key=taxa, value=abundance_percent, Jellyfish:Meroplankton.Larvae)  %>% 
+  left_join(mal_net_abun_depth_convert) %>% 
+  left_join(taxa_net_DNA, by=c("taxa" = "abundance_taxa")) %>% 
+  mutate(abundance_percent=abundance_percent/100) # make 0-1 so same as others
+#????
+
+```
+
+## join DNA
+```{r join_DNA}
+# need all sample/taxa compinations as rows and each differe "dataset" as columns !!
+# prep and join 18s     names(DNA)
+DNA18s<-dat_18S_phy_90 %>% 
+  left_join(dat_18S_phy_80) %>% 
+  left_join(dat_18S_phy_70) %>% 
+  select(Station:Phylum,abund_taxa,biomass_taxa,metabarcode_PID_70,metabarcode_PID_80,metabarcode_PID_90)  %>% 
+  mutate(Depth=10*ceiling(Depth/10)) # round depths to tens digit
+  #  unique(DNA18s$dat_18S_phy_90)
+
+# join with genome, first need to spread genome   names(dat_genome2)
+dat_genome2 <- dat_genome %>% 
+  select(unique_ID:Phylum,filter_size_cat,abund_taxa,biomass_taxa,reads_percent) %>% 
+  mutate(to_spread=paste("metagenome",gene_domain,pid,sep="_")) %>% 
+  select(-gene_domain, -pid, -unique_ID, -Sample) %>% 
+  filter(reads_percent > 0) %>%  # remove 0's then add 0's in spread
+  spread(key=to_spread,value=reads_percent, fill=0) %>% 
+  mutate(Depth=10*ceiling(Depth/10)) %>%
+  mutate(Station=as.integer(Station), filter_size=factor(filter_size))
+  #filter(filter_size=="0.2.0.8" | filter_size=="0.2.3")  # only small filtered range
+ #  unique(dat_genome2$filter_size)   unique(dat_genome$filter_size)
+
+# get catagoies in both datasets
+un1<-intersect(unique(dat_genome2$Phylum),unique(DNA18s$Phylum))
+
+ # simplify and keep station/depths that are in 18S
+dat_genome_simp <- dat_genome2 %>%   # names(dat_genome2)
+    select(Station,Depth,filter_size,Phylum,metagenome_ec3_PID_50:metagenome_pf7_PID_90) %>% 
+    filter(filter_size=="0.2.0.8" | filter_size=="0.2.3") %>% # keep only small filter to compare to 18s data
+    select(-filter_size) %>% 
+    semi_join(DNA18s, by = c("Station", "Depth")) 
+ # simplify and keep station/dpths that are in genome
+DNA18s2<-DNA18s %>%  # names(DNA18s)
+  select(Station,Depth,Phylum,metabarcode_PID_70:metabarcode_PID_90) %>% 
+  semi_join(dat_genome_simp, by = c("Station", "Depth"))
+    
+
+DNA<-DNA18s2 %>%   # names(DNA)  names(dat_genome_simp)
+    full_join(dat_genome_simp) %>% 
+    mutate_at(vars(metabarcode_PID_70:metagenome_pf7_PID_90), funs(replace(., is.na(.), 0)) ) %>% 
+    ungroup() %>% 
+    filter(Phylum %in% un1) %>% 
+    left_join(taxa_DNA_net, by=c("Phylum" = "DNA_taxa")) 
+
+# number of samples  ---  61 samples  !!!!!!!!
+mes<-DNA %>%
+  mutate(sample=paste(Station,Depth ,sep="_")) %>% 
+  filter(!duplicated(sample))
+
+```
+
+
+## join_abund
+
+```{r join_abund}
+#  use DNA2  , but should use only metagenome filter comparable to 18S -filtered in metagenome2!
+# names(mal_net_abun2)    names(DNA2)
+# prep abund data
+mal_net_abun3 <- mal_net_abun2 %>% # limit
+  select(Stations, taxa, abundance_percent, min_depth, max_depth, abund_DNA_taxa) %>%
+  dplyr::rename(Station=Stations)%>%   
+  group_by(Station, min_depth, max_depth, abund_DNA_taxa) %>% 
+  summarise_at(vars(abundance_percent), sum) %>% 
+  ungroup()  %>% 
+  dplyr::rename(net_abundance=abundance_percent)
+
+# simplify and keep station/dpths that are in DNA  names(mal_net_abun3_simp)
+mal_net_abun3_simp <- mal_net_abun3 %>%
+  fuzzyjoin::fuzzy_semi_join(DNA,
+  by = c("Station" = "Station","min_depth"="Depth" ,"max_depth"="Depth" ),  
+  match_fun = list(`==`, `<=`, `>=`)  )
+mal_net_abun3_simp_18s <- mal_net_abun3 %>%
+  fuzzyjoin::fuzzy_semi_join(DNA18s,
+  by = c("Station" = "Station","min_depth"="Depth" ,"max_depth"="Depth" ),  
+  match_fun = list(`==`, `<=`, `>=`)  )
+mal_net_abun3_simp_gen <- mal_net_abun3 %>%
+  fuzzyjoin::fuzzy_semi_join(dat_genome2,
+  by = c("Station" = "Station","min_depth"="Depth" ,"max_depth"="Depth" ),  
+  match_fun = list(`==`, `<=`, `>=`)  )
+
+# sum by abundnace taxa catagories
+#     unique(mal_net_abun3$abund_DNA_taxa)   unique(DNA2$abund_taxa)
+DNA_ab <- DNA %>%   # names(DNA)
+  ungroup() %>% 
+  # sum percents to abundance catagories
+  select(-biomass_taxa, -Phylum) %>% 
+  group_by(Station,Depth,abund_taxa) %>% # sum by abundance catagories
+  summarise_at(vars(metabarcode_PID_70:metagenome_pf7_PID_90), sum) %>% 
+  ungroup()  
+
+DNA18s_ab <- DNA18s %>%   # names(DNA18s)
+  ungroup() %>% 
+  # sum percents to abundance catagories
+  select(-biomass_taxa, -Sample.ID, -Phylum) %>% 
+  group_by(Station,Depth,abund_taxa) %>% # sum by abundance catagories
+  summarise_at(vars(metabarcode_PID_70:metabarcode_PID_90), sum) %>% 
+  ungroup()  
+
+dat_genome2_ab <- dat_genome2 %>%   # names(dat_genome2)
+  ungroup() %>% 
+  # sum percents to abundance catagories
+  select(-biomass_taxa, -ID.x,-Cruise,-area, -Phylum) %>% 
+  group_by(Station,Depth,filter_size,abund_taxa) %>% # sum by abundance catagories
+  summarise_at(vars(metagenome_ec3_PID_50:metagenome_pf7_PID_90), sum) %>% 
+  ungroup()  
+###
+# get catagoies in both datasets
+un1_a<-intersect(unique(DNA_ab$abund_taxa),unique(mal_net_abun3$abund_DNA_taxa))
+un1_a_18<-intersect(unique(DNA18s_ab$abund_taxa),unique(mal_net_abun3$abund_DNA_taxa))
+un1_a_gen<-intersect(unique(dat_genome2_ab$abund_taxa),unique(mal_net_abun3$abund_DNA_taxa))
+
+#### join all DNA and abudnance
+DNA_ab2 <- DNA_ab %>% # first semi-join then full join
+fuzzyjoin::fuzzy_semi_join(mal_net_abun3_simp,
+  by = c("Station" = "Station","Depth" = "min_depth","Depth" = "max_depth"),  # same taxonomic catagories
+  match_fun = list(`==`, `>=`, `<=`)  ) %>% 
+  fuzzyjoin::fuzzy_full_join(mal_net_abun3_simp,
+  by = c("Station" = "Station","Depth" = "min_depth","Depth" = "max_depth","abund_taxa" = "abund_DNA_taxa"),  
+  match_fun = list(`==`, `>=`, `<=`, `==`)  ) %>% 
+  filter(complete.cases(abund_taxa))  %>% # get rid of NA's
+  filter(abund_taxa %in% un1_a) %>%  # keep only common catagories
+  mutate_at(vars(metabarcode_PID_70:metagenome_pf7_PID_90,net_abundance), funs(replace(., is.na(.), 0)) ) #replace NA-0
+# 10 samples      unique(DNA_ab$Station.y)
+
+## join  18s or meta to abudn
+ # simplify and keep station/depths that are in abudn       names(DNA18s_ab2)
+DNA18s_ab2 <- DNA18s_ab %>% # first semi-join then full join
+  fuzzyjoin::fuzzy_semi_join(mal_net_abun3_simp_18s,
+  by = c("Station" = "Station","Depth" = "min_depth","Depth" = "max_depth"),  # same taxonomic catagories
+  match_fun = list(`==`, `>=`, `<=`)  ) %>% 
+  fuzzyjoin::fuzzy_full_join(mal_net_abun3_simp_18s,
+  by = c("Station" = "Station","Depth" = "min_depth","Depth" = "max_depth","abund_taxa" = "abund_DNA_taxa"),  
+  match_fun = list(`==`, `>=`, `<=`, `==`)  ) %>% 
+  filter(complete.cases(abund_taxa))  %>% # get rid of NA's
+  filter(abund_taxa %in% un1_a_18) %>%  # keep only common catagories
+  mutate_at(vars(metabarcode_PID_70:metabarcode_PID_90,net_abundance), funs(replace(., is.na(.), 0)) )
+ #  unique(paste(DNA18s_ab2$Station.x,DNA18s_ab2$Depth))  41 samples !!
+
+# simplify and keep station/dpths that are in abund
+dat_genome2_ab2 <- dat_genome2_ab %>% # first semi-join then full join     names(dat_genome2_ab)
+  fuzzyjoin::fuzzy_semi_join(mal_net_abun3_simp_gen,
+  by = c("Station" = "Station","Depth" = "min_depth","Depth" = "max_depth"),  # same taxonomic catagories
+  match_fun = list(`==`, `>=`, `<=`)  ) %>% 
+  fuzzyjoin::fuzzy_full_join(mal_net_abun3_simp_gen,
+  by = c("Station" = "Station","Depth" = "min_depth","Depth" = "max_depth","abund_taxa" = "abund_DNA_taxa"),  
+  match_fun = list(`==`, `>=`, `<=`, `==`)  ) %>% 
+  filter(complete.cases(abund_taxa))  %>% # get rid of NA's
+  filter(abund_taxa %in% un1_a_gen) %>%  # keep only common catagories
+  mutate_at(vars(metagenome_ec3_PID_50:metagenome_pf7_PID_90,net_abundance), funs(replace(., is.na(.), 0)) )
+#  13 samples
+```
+
+
+## join_biomass
+
+```{r join_biomass}
+#  prep biomass data      names(mal_net_biomass2)  unique(mal_net_biomass3$taxa_j)
+mal_net_biomass3 <- mal_net_biomass2 %>% 
+  select(Station, taxa, biomass_percent, min_depth, max_depth, taxa_j) %>%
+  group_by(Station, min_depth, max_depth, taxa_j) %>% 
+  summarise_at(vars(biomass_percent), sum) %>% 
+  ungroup()  %>% 
+  dplyr::rename(net_biomass=biomass_percent)
+# simplify and keep station/dpths that are in DNA
+mal_net_biomass3_simp <- mal_net_biomass3 %>%
+  fuzzyjoin::fuzzy_semi_join(DNA,
+  by = c("Station" = "Station","min_depth"="Depth" ,"max_depth"="Depth" ),  
+  match_fun = list(`==`, `<=`, `>=`)  )
+mal_net_biomass3_simp_18s <- mal_net_biomass3 %>%
+  fuzzyjoin::fuzzy_semi_join(DNA18s,
+  by = c("Station" = "Station","min_depth"="Depth" ,"max_depth"="Depth" ),  
+  match_fun = list(`==`, `<=`, `>=`)  )
+mal_net_biomass3_simp_gen <- mal_net_biomass3 %>%
+  fuzzyjoin::fuzzy_semi_join(dat_genome2,
+  by = c("Station" = "Station","min_depth"="Depth" ,"max_depth"="Depth" ),  
+  match_fun = list(`==`, `<=`, `>=`)  )
+
+# sum by taxa catagoreis  - fewest number of taxa catagories  unique(DNA_net$biomass_taxa)
+DNA_net <- DNA_ab2 %>%   # names(DNA_ab)  names(DNA_net) names(mal_net_abun3)
+  dplyr::rename(Station=Station.x) %>% 
+  select(Station:metagenome_pf7_PID_90,net_abundance) %>% 
+  ungroup() %>%
+  # get biomass catagories
+  left_join(taxa_DNA_net[,2:3]) %>% 
+  # sum percents to biomass catagories
+  group_by(Station,Depth,biomass_taxa) %>% # unique(DNA_net$biomass_taxa)
+  summarise_at(vars(metabarcode_PID_70:net_abundance), sum) %>% 
+  ungroup() 
+
+DNA18s_bio <- DNA18s %>%   # names(DNA18s)
+  ungroup() %>% 
+  # sum percents to abundance catagories
+  select(-abund_taxa, -Sample.ID, -Phylum) %>% 
+  group_by(Station,Depth,biomass_taxa) %>% # sum by abundance catagories
+  summarise_at(vars(metabarcode_PID_70:metabarcode_PID_90), sum) %>% 
+  ungroup()  
+
+dat_genome2_bio <- dat_genome2 %>%   # names(dat_genome2)
+  ungroup() %>% 
+  # sum percents to abundance catagories
+  select(-abund_taxa, -ID.x,-Cruise,-area, -Phylum) %>% 
+  group_by(Station,Depth,filter_size,biomass_taxa) %>% # sum by abundance catagories
+  summarise_at(vars(metagenome_ec3_PID_50:metagenome_pf7_PID_90), sum) %>% 
+  ungroup()  
+  
+  # get catagoies in both datasets
+un1_b<-intersect(unique(DNA_net$biomass_taxa),unique(mal_net_biomass3_simp$taxa_j))
+un1_b_18<-intersect(unique(DNA18s_bio$biomass_taxa),unique(mal_net_biomass3$taxa_j))
+un1_b_gen<-intersect(unique(dat_genome2_bio$biomass_taxa),unique(mal_net_biomass3$taxa_j))
+
+##  join biomass data
+DNA_net <- DNA_net %>% # first semi-join then full join  # unique(mal_net_biomass3_simp$taxa_j)
+fuzzyjoin::fuzzy_semi_join(mal_net_biomass3_simp,
+  by = c("Station" = "Station","Depth" = "min_depth","Depth" = "max_depth"),  # same 
+  match_fun = list(`==`, `>=`, `<=`)  ) %>% 
+  # full join
+    fuzzyjoin::fuzzy_full_join(mal_net_biomass3_simp,
+  by = c("Station" = "Station","Depth" = "min_depth","Depth" = "max_depth","biomass_taxa" = "taxa_j"),  # 
+  match_fun = list(`==`, `>=`, `<=`, `==`)  ) %>% 
+  filter(complete.cases(biomass_taxa))  %>% # get rid of NA's
+  filter(biomass_taxa %in% un1_b) %>%  # keep only common catagories
+  mutate_at(vars(metabarcode_PID_70:metagenome_pf7_PID_90,net_abundance,net_biomass), funs(replace(., is.na(.), 0)) )
+# 7   samples
+# unique(mal_net_abun3$abund_DNA_taxa)
+
+DNA18s_bio2 <- DNA18s_bio %>% # first semi-join then full join  # unique(mal_net_biomass3_simp$taxa_j)
+  fuzzyjoin::fuzzy_semi_join(mal_net_biomass3_simp_18s,
+  by = c("Station" = "Station","Depth" = "min_depth","Depth" = "max_depth"),  # same 
+  match_fun = list(`==`, `>=`, `<=`)  ) %>% 
+  # full join
+    fuzzyjoin::fuzzy_full_join(mal_net_biomass3_simp_18s,
+  by = c("Station" = "Station","Depth" = "min_depth","Depth" = "max_depth","biomass_taxa" = "taxa_j"),  # 
+  match_fun = list(`==`, `>=`, `<=`, `==`)  ) %>% 
+  filter(complete.cases(biomass_taxa))  %>% # get rid of NA's
+  filter(biomass_taxa %in% un1_b_18) %>%  # keep only common catagories
+  mutate_at(vars(metabarcode_PID_70:metabarcode_PID_90,net_biomass), funs(replace(., is.na(.), 0)) )
+## 23 samples  ??
+
+dat_genome2_bio2 <- dat_genome2_bio %>% # first semi-join then full join  # unique(mal_net_biomass3_simp$taxa_j)
+  fuzzyjoin::fuzzy_semi_join(mal_net_biomass3_simp_gen,
+  by = c("Station" = "Station","Depth" = "min_depth","Depth" = "max_depth"),  # same 
+  match_fun = list(`==`, `>=`, `<=`)  ) %>% 
+  # full join
+    fuzzyjoin::fuzzy_full_join(mal_net_biomass3_simp_gen,
+  by = c("Station" = "Station","Depth" = "min_depth","Depth" = "max_depth","biomass_taxa" = "taxa_j"),  # 
+  match_fun = list(`==`, `>=`, `<=`, `==`)  ) %>% 
+  filter(complete.cases(biomass_taxa))  %>% # get rid of NA's
+  filter(biomass_taxa %in% un1_b_gen) %>%  # keep only common catagories
+  mutate_at(vars(metagenome_ec3_PID_50:metagenome_pf7_PID_90,net_biomass), funs(replace(., is.na(.), 0)) )
+# 12 samples
+```
+
+
+## DNA corrplot
+examples-
+https://cran.r-project.org/web/packages/corrplot/vignettes/corrplot-intro.html
+citation
+https://rdrr.io/cran/corrplot/man/corrplot.html
+example of scatterplot for correalations
+http://www.sthda.com/english/wiki/correlation-matrix-a-quick-start-guide-to-analyze-format-and-visualize-a-correlation-matrix-using-r-software
+
+```{r DNA_corrplot}
+# isolate correaltion data
+DNAcor<-DNA %>%   #  names(DNA)
+select_at(4:15) %>% 
+mutate_all(~replace(., is.na(.), 0))
+
+trans <- function(x, na.rm = FALSE) (log((x*100)+1))
+
+DNAcorlog<-DNAcor %>% 
+  mutate_all(trans)
+
+# method = c("pearson", "kendall", "spearman"))
+# perason default, kendall and spearman rank
+corDNA <- cor(DNAcor)
+#corDNA <- cor(DNAcor, method="spearman")
+corDNAlog <- cor(DNAcorlog)
+
+## text labels rotated 45 degrees
+corrplot(corDNA, type = "lower", order = "hclust", tl.col = "black", 
+         tl.srt = 45, cl.lim=c(-0.1,1), number.cex = .7)
+
+# get color ramp, need red because not negatives
+b<-brewer.pal(n = 9, name = "Blues")
+b<-brewer.pal(n = 11, name = "RdBu")
+b<-b[2:10]
+bb<-colorRampPalette(b)(20)
+## r2
+corrplot(corDNA*corDNA, type = "lower", order = "hclust", tl.col = "black", 
+         tl.srt = 45, cl.lim=c(0,1), addCoef.col="grey20", number.cex = .6,
+         col = bb, diag=FALSE)
+
+corrplot(corDNAlog, type = "lower", order = "hclust", tl.col = "black", 
+         tl.srt = 45, addCoef.col="grey20", number.cex = .6,
+         col = bb, diag=FALSE)
+
+#  save    correlation_DNA_pearson_percent_log    #  
+
+## one last way to look at data
+PerformanceAnalytics::chart.Correlation(DNAcor, histogram=TRUE, pch=19)
+
+```
+
+## abund corplot
+
+```{r abund_corr}
+
+trans <- function(x, na.rm = FALSE) (log((x*100)+1))
+
+## DNA and abund
+# isolate correaltion data
+DNAcor<-DNA_ab2 %>%   # names(DNA_ab)
+select_at(c(4:15,20)) %>% 
+mutate_all(~replace(., is.na(.), 0)) %>% 
+mutate_all(trans)
+# perason default, kendall and spearman rank
+corDNAlog <- cor(DNAcor)
+
+corrplot(corDNAlog*corDNAlog, type = "lower", order = "hclust", tl.col = "black", 
+         tl.srt = 45, cl.lim=c(0,1), addCoef.col="grey20", number.cex = .6,
+         col = bb, diag=FALSE)
+#  !!!  only 10 samples !!!
+#  save    correlation_DNAabund_pearson_percent_log
+
+## 18s and abund
+ab_18_cor<-DNA18s_ab2 %>%   # names(DNA18s_ab2)
+select_at(c(4:6,11)) %>% 
+mutate_all(~replace(., is.na(.), 0)) %>% 
+mutate_all(trans)
+# perason default, kendall and spearman rank
+cor18abunlog <- cor(ab_18_cor)
+
+corrplot(cor18abunlog*cor18abunlog, type = "lower", order = "hclust", tl.col = "black", 
+         tl.srt = 45, cl.lim=c(0,1), addCoef.col="grey20", number.cex = .6,
+         col = bb, diag=FALSE)
+#  save    correlation_18sabund_pearson_percent_log
+
+
+## metageno and abund
+ab_metag_cor<-dat_genome2_ab2 %>%   # names(dat_genome2_ab2)
+select_at(c(5:13,18)) %>% 
+mutate_all(~replace(., is.na(.), 0)) %>% 
+mutate_all(trans)  # log((x*100)+1)
+
+# perason default, kendall and spearman rank
+corgenabunlog <- cor(ab_metag_cor)
+
+corrplot(corgenabunlog, type = "lower", order = "hclust", tl.col = "black", 
+         tl.srt = 45, addCoef.col="grey20", number.cex = .6,
+         col = bb, diag=FALSE)
+#  save    correlation_genome_abund_pearson_percent_log
+```
+
+
+## bio corplot
+
+```{r bio_corplot}
+# all data
+DNAcor<-DNA_net %>%   # names(DNA_net)
+select_at(c(4:16,21)) %>% 
+mutate_all(~replace(., is.na(.), 0)) %>% 
+  mutate_all(trans)
+# 
+corDNAlog <- cor(DNAcor)
+## r2
+corrplot(corDNAlog*corDNAlog, type = "lower", order = "hclust", tl.col = "black", 
+         tl.srt = 45, cl.lim=c(0,1), addCoef.col="grey20", number.cex = .6,
+         col = bb, diag=FALSE)
+#  !!!  only 10 samples !!!
+#  save    correlation_DNAnet_pearson_percent_log
+
+# bio amnd 18s
+bio_18_cor<-DNA18s_bio2 %>%   # names(DNA_net)
+select_at(c(4:6,11)) %>% 
+mutate_all(~replace(., is.na(.), 0)) %>% 
+  mutate_all(trans)
+# 
+cor18biolog <- cor(bio_18_cor)
+## r2
+corrplot(cor18biolog*cor18biolog, type = "lower", order = "hclust", tl.col = "black", 
+         tl.srt = 45, cl.lim=c(0,1), addCoef.col="grey20", number.cex = .6,
+         col = bb, diag=FALSE)
+#  save    correlation_bio_18s_pearson_percent_log
+
+# bio amnd metagen
+bio_metag_cor<-dat_genome2_bio2 %>%   # names(DNA_net)
+select_at(c(5:13,18)) %>% 
+mutate_all(~replace(., is.na(.), 0)) %>% 
+  mutate_all(trans)
+# plot(bio_metag_cor$metagenome_ec3_PID_70,bio_metag_cor$net_biomass)  names(bio_metag_cor)
+cormetagbiolo <- cor(bio_metag_cor)
+## r2
+corrplot(cormetagbiolo, type = "lower", order = "hclust", tl.col = "black", 
+         tl.srt = 45, addCoef.col="grey20", number.cex = .6,
+         col = bb, diag=FALSE)
+
+corrplot(cormetagbiolo, type = "lower", order = "hclust", tl.col = "black", 
+         tl.srt = 45, addCoef.col="grey20", number.cex = .6,
+         col = bb, diag=FALSE)
+#  save    correlation_bio_metag_pearson_percent_log
+
+```
+
+
+## comp ec4 plots
+
+```{r mg_scat}
+
+## plot variables
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30')
+space<-c(1:10) #
+cc1<-cc1[1:length(space)]
+lim<-c(0,100)
+lim<-log(lim+1)
+ax_lab<-c(0,5,25,50,100)
+ax_br<-log(ax_lab+1)
+############################################################
+# 18s abund
+datp<- DNA18s_ab2 %>%   #   names(DNA18s_ab2)
+  mutate(abund_taxa =forcats::fct_recode(abund_taxa, Mollusca = "Pteropods", Polychaeta="Polychaets", Chaetognatha="Chaetognaths", Chordata="Chordates")) %>% 
+  mutate(Taxa= abund_taxa, ind = log((net_abundance*100)+1) , resp=log((metabarcode_PID_80*100)+1), fac_col=factor(paste(Station.x,Depth))) 
+  
+cor1 <- (cor(datp$ind,datp$resp))^2
+
+p_18s_abund<-ggplot(datp, aes(x = ind, y = resp)) +
+  geom_point(aes(x = ind, y = resp, shape=Taxa), size = 2, color="grey40") +
+  scale_y_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +  #, limits = c(0, NA), ,  expand = c(0,0)
+  scale_x_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +
+  #scale_color_manual(values="grey") +
+  scale_shape(solid=FALSE) +
+  stat_smooth(method = "lm", col = "black", se = FALSE) +
+  annotate("text", x = 3.7, y = 3.0, parse = TRUE, label = as.character(expression(r^{2}*"=0.08"))) +
+  annotate("text", x = 3.7, y = 2.6, label = "n=41") +
+  labs(y = "metabarcode (% sequences)", x = "net (% abundance)")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  guides(colour=FALSE) +
+  #theme(legend.position="none") +
+  theme(panel.grid.major = element_blank())   # remove grids
+
+########
+# 18s bio
+datp<- DNA18s_bio2 %>%   #   names(DNA18s_bio2)
+    mutate(Taxa= biomass_taxa, ind = log((net_biomass*100)+1) , resp=log((metabarcode_PID_80*100)+1), fac_col=factor(paste(Station.x,Depth))) 
+
+cor1 <- (cor(datp$ind,datp$resp))^2
+
+p_18s_bio<-ggplot(datp, aes(x = ind, y = resp)) +
+  geom_point(aes(x = ind, y = resp, colour=fac_col, shape=Taxa), size = 2, color="grey40") +
+  scale_y_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +  #, limits = c(0, NA), ,  expand = c(0,0)
+  scale_x_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +
+  #scale_color_manual(values=cc1) +
+  scale_shape(solid=FALSE) +
+  stat_smooth(method = "lm", col = "black", se = FALSE) +
+  annotate("text", x = 2.5, y = 2.0, parse = TRUE, label = as.character(expression(r^{2}*"=0.15"))) +
+  annotate("text", x = 2.5, y = 1.6, label = "n=23") +
+  labs(y = "metabarcode (% sequences)", x = "net (% biomass)")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  guides(colour=FALSE) +
+  #theme(legend.position="none") +
+  theme(panel.grid.major = element_blank())   # remove grids
+
+####################################################
+##########
+# metag abund , 
+### 
+#  small filt
+datp<- dat_genome2_ab2 %>%   #   names(dat_genome2_ab2)
+  mutate(abund_taxa =forcats::fct_recode(abund_taxa, Mollusca = "Pteropods", Polychaeta="Polychaets",  Chordata="Chordates")) %>%
+    mutate(Taxa= abund_taxa, ind = log((net_abundance*100)+1) , resp=log((metagenome_ec4_PID_70*100)+1), fac_col=factor(paste(Station.x,Depth))) %>%
+  filter(filter_size=="0.2.0.8"  | filter_size=="0.2.3")    # unique(datp$filter_size)
+
+mes<-datp %>% 
+    filter(!duplicated(fac_col))
+
+cor1 <- (cor(datp$ind,datp$resp))^2
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30',"black", "red","blue")
+
+p_gen_ab_filt_small<-ggplot(datp, aes(x = ind, y = resp)) +
+  geom_point(aes(x = ind, y = resp, colour=fac_col, shape=Taxa), size = 2) +
+  scale_y_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +  #, limits = c(0, NA), ,  expand = c(0,0)
+  scale_x_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +
+  scale_color_manual(values=cc1) +
+  scale_shape(solid=FALSE) +
+  stat_smooth(method = "lm", col = "black", se = FALSE) +
+  annotate("text", x = 2.7, y = 3.8, parse = TRUE, label = as.character(expression(r^{2}*"=0.77"))) +
+  annotate("text", x = 2.7, y = 3.4, label = "n=13") +
+  labs(y = "metagenome (% sequences)", x = "net (% abundance)")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  guides(colour=FALSE) +
+  #theme(legend.position="none") +
+  theme(panel.grid.major = element_blank())   # remove grids
+
+##########
+# big filt
+datp<- dat_genome2_ab2 %>%   #   names(dat_genome2_bio2)
+  mutate(abund_taxa =forcats::fct_recode(abund_taxa, Mollusca = "Pteropods", Polychaeta="Polychaets", Chordata="Chordates")) %>%
+    mutate(Taxa= abund_taxa, ind = log((net_abundance*100)+1) , resp=log((metagenome_ec4_PID_70*100)+1), fac_col=factor(paste(Station.x,Depth))) %>%
+    filter(filter_size=="0.8.20"  | filter_size=="3.20")    # unique(datp$filter_size)
+mes<-datp %>% 
+    filter(!duplicated(fac_col))
+
+cor1 <- (cor(datp$ind,datp$resp))^2
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30',"black", "red")
+
+p_gen_ab_filt_big<-ggplot(datp, aes(x = ind, y = resp)) +
+  geom_point(aes(x = ind, y = resp, colour=fac_col, shape=Taxa), size = 2) +
+  scale_y_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +  #, limits = c(0, NA), ,  expand = c(0,0)
+  scale_x_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +
+  scale_color_manual(values=cc1) +
+  scale_shape(solid=FALSE) +
+  stat_smooth(method = "lm", col = "black", se = FALSE) +
+  annotate("text", x = 2.7, y = 3.1, parse = TRUE, label = as.character(expression(r^{2}*"=0.23"))) +
+    annotate("text", x = 2.7, y = 2.7, label = "n=8") +
+  labs(y = "metagenome (% sequences)", x = "net (% abundance)")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  guides(colour=FALSE) +
+  #theme(legend.position="none") +
+  theme(panel.grid.major = element_blank())   # remove grids
+####################################################
+##########
+# metag bio , 
+### 
+#  small filt
+datp<- dat_genome2_bio2 %>%   #   names(dat_genome2_bio2)
+    mutate(Taxa= biomass_taxa, ind = log((net_biomass*100)+1) , resp=log((metagenome_ec4_PID_70*100)+1), fac_col=factor(paste(Station.x,Depth))) %>%
+  filter(filter_size=="0.2.0.8"  | filter_size=="0.2.3")    # unique(datp$filter_size)
+mes<-datp %>% 
+    filter(!duplicated(fac_col))
+
+cor1 <- (cor(datp$ind,datp$resp))^2
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30',"black", "red")
+
+p_gen_bio_filt_small<-ggplot(datp, aes(x = ind, y = resp)) +
+  geom_point(aes(x = ind, y = resp, colour=fac_col, shape=Taxa), size = 2) +
+  scale_y_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +  #, limits = c(0, NA), ,  expand = c(0,0)
+  scale_x_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +
+  scale_color_manual(values=cc1) +
+  scale_shape(solid=FALSE) +
+  stat_smooth(method = "lm", col = "black", se = FALSE) +
+  annotate("text", x = 2.2, y = 2.2, parse = TRUE, label = as.character(expression(r^{2}*"=0.63"))) +
+  annotate("text", x = 2.2, y = 1.8, label = "n=12") +
+  labs(y = "metagenome (% sequences)", x = "net (% biomass)")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  guides(colour=FALSE) +
+  #theme(legend.position="none") +
+  theme(panel.grid.major = element_blank())   # remove grids
+
+##########
+# big filt
+datp<- dat_genome2_bio2 %>%   #   names(dat_genome2_bio2)
+    mutate(Taxa= biomass_taxa, ind = log((net_biomass*100)+1) , resp=log((metagenome_ec4_PID_70*100)+1), fac_col=factor(paste(Station.x,Depth))) %>%
+    filter(filter_size=="0.8.20"  | filter_size=="3.20")    # unique(datp$filter_size)
+mes<-datp %>% 
+    filter(!duplicated(fac_col))
+
+cor1 <- (cor(datp$ind,datp$resp))^2
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30',"black", "red")
+
+p_gen_bio_filt_big<-ggplot(datp, aes(x = ind, y = resp)) +
+  geom_point(aes(x = ind, y = resp, colour=fac_col, shape=Taxa), size = 2) +
+  scale_y_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +  #, limits = c(0, NA), ,  expand = c(0,0)
+  scale_x_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +
+  scale_color_manual(values=cc1) +
+  scale_shape(solid=FALSE) +
+  stat_smooth(method = "lm", col = "black", se = FALSE) +
+  annotate("text", x = 2.7, y = 2.8, parse = TRUE, label = as.character(expression(r^{2}*"=0.85"))) +
+    annotate("text", x = 2.7, y = 2.4, label = "n=8") +
+  labs(y = "metagenome (% sequences)", x = "net (% biomass)")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  guides(colour=FALSE) +
+  #theme(legend.position="none") +
+  theme(panel.grid.major = element_blank())   # remove grids
+
+
+####################################################
+# put together
+#ggpubr::ggarrange(p_18s_abund, p_18s_bio, p_gen_ab_filt_small, p_gen_bio_filt_small, p_gen_ab_filt_big, p_gen_bio_filt_big  , ncol=2, nrow=3, labels="auto")
+
+# all 6  ###################
+ggpubr::ggarrange(p_18s_abund, p_18s_bio, p_gen_ab_filt_small, p_gen_bio_filt_small, p_gen_ab_filt_big, p_gen_bio_filt_big  , ncol=2, nrow=3, labels=list("A","D","B","E","C","F"), font.label = list(face="plain", size=10)  )
+#  export
+#  ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/comparison_2019/DMAP_6_correlations.pdf", plot = last_plot())
+
+# genome small  ###################
+small<-ggpubr::ggarrange(p_gen_ab_filt_small, p_gen_bio_filt_small, ncol=2, nrow=1, labels=list("A","B"), font.label = list(face="plain", size=10)  )
+#  export
+ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/comparison_2019/net_gen_small_sf_correlations.pdf", plot = small, width=20 , height=7, units=c("cm"))
+
+# genome big  ###################
+big<-ggpubr::ggarrange(p_gen_ab_filt_big, p_gen_bio_filt_big  , ncol=1, nrow=2, labels=list("A","B"), font.label = list(face="plain", size=10)  )
+#  export
+#  ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/comparison_2019/net_gen_large_sf_correlations.pdf", plot = big , width=5.5 , height=8, units=c("in"))
+
+```
+
+## comp ec3 plots
+
+```{r mg_scat}
+
+## plot variables
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30')
+space<-c(1:10) #
+cc1<-cc1[1:length(space)]
+lim<-c(0,100)
+lim<-log(lim+1)
+ax_lab<-c(0,5,25,50,100)
+ax_br<-log(ax_lab+1)
+
+##########
+# metag abund , 
+### 
+#  small filt
+datp<- dat_genome2_ab2 %>%   #   names(dat_genome2_ab2)
+  mutate(abund_taxa =forcats::fct_recode(abund_taxa, Mollusca = "Pteropods", Polychaeta="Polychaets",  Chordata="Chordates")) %>%
+    mutate(Taxa= abund_taxa, ind = log((net_abundance*100)+1) , resp=log((metagenome_ec3_PID_70*100)+1), fac_col=factor(paste(Station.x,Depth))) %>%
+  filter(filter_size=="0.2.0.8"  | filter_size=="0.2.3")    # unique(datp$filter_size)
+
+mes<-datp %>% 
+    filter(!duplicated(fac_col))
+
+cor1 <- (cor(datp$ind,datp$resp))^2
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30',"black", "red","blue")
+
+p_gen_ab_filt_small<-ggplot(datp, aes(x = ind, y = resp)) +
+  geom_point(aes(x = ind, y = resp, colour=fac_col, shape=Taxa), size = 2) +
+  scale_y_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +  #, limits = c(0, NA), ,  expand = c(0,0)
+  scale_x_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +
+  scale_color_manual(values=cc1) +
+  scale_shape(solid=FALSE) +
+  stat_smooth(method = "lm", col = "black", se = FALSE) +
+  annotate("text", x = 2.7, y = 3.8, parse = TRUE, label = as.character(expression(r^{2}*"=0.004"))) +
+  annotate("text", x = 2.7, y = 3.4, label = "n=13") +
+  labs(y = "metagenome (% sequences)", x = "net (% abundance)")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  guides(colour=FALSE) +
+  #theme(legend.position="none") +
+  theme(panel.grid.major = element_blank())   # remove grids
+
+##########
+# big filt
+datp<- dat_genome2_ab2 %>%   #   names(dat_genome2_bio2)
+  mutate(abund_taxa =forcats::fct_recode(abund_taxa, Mollusca = "Pteropods", Polychaeta="Polychaets", Chordata="Chordates")) %>%
+    mutate(Taxa= abund_taxa, ind = log((net_abundance*100)+1) , resp=log((metagenome_ec3_PID_70*100)+1), fac_col=factor(paste(Station.x,Depth))) %>%
+    filter(filter_size=="0.8.20"  | filter_size=="3.20")    # unique(datp$filter_size)
+mes<-datp %>% 
+    filter(!duplicated(fac_col))
+
+cor1 <- (cor(datp$ind,datp$resp))^2
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30',"black", "red")
+
+p_gen_ab_filt_big<-ggplot(datp, aes(x = ind, y = resp)) +
+  geom_point(aes(x = ind, y = resp, colour=fac_col, shape=Taxa), size = 2) +
+  scale_y_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +  #, limits = c(0, NA), ,  expand = c(0,0)
+  scale_x_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +
+  scale_color_manual(values=cc1) +
+  scale_shape(solid=FALSE) +
+  stat_smooth(method = "lm", col = "black", se = FALSE) +
+  annotate("text", x = 2.7, y = 3.1, parse = TRUE, label = as.character(expression(r^{2}*"=0.52"))) +
+    annotate("text", x = 2.7, y = 2.7, label = "n=8") +
+  labs(y = "metagenome (% sequences)", x = "net (% abundance)")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  guides(colour=FALSE) +
+  #theme(legend.position="none") +
+  theme(panel.grid.major = element_blank())   # remove grids
+####################################################
+##########
+# metag bio , 
+### 
+#  small filt
+datp<- dat_genome2_bio2 %>%   #   names(dat_genome2_bio2)
+    mutate(Taxa= biomass_taxa, ind = log((net_biomass*100)+1) , resp=log((metagenome_ec3_PID_70*100)+1), fac_col=factor(paste(Station.x,Depth))) %>%
+  filter(filter_size=="0.2.0.8"  | filter_size=="0.2.3")    # unique(datp$filter_size)
+mes<-datp %>% 
+    filter(!duplicated(fac_col))
+
+cor1 <- (cor(datp$ind,datp$resp))^2
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30',"black", "red")
+
+p_gen_bio_filt_small<-ggplot(datp, aes(x = ind, y = resp)) +
+  geom_point(aes(x = ind, y = resp, colour=fac_col, shape=Taxa), size = 2) +
+  scale_y_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +  #, limits = c(0, NA), ,  expand = c(0,0)
+  scale_x_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +
+  scale_color_manual(values=cc1) +
+  scale_shape(solid=FALSE) +
+  stat_smooth(method = "lm", col = "black", se = FALSE) +
+  annotate("text", x = 2.2, y = 2.2, parse = TRUE, label = as.character(expression(r^{2}*"=0.50"))) +
+  annotate("text", x = 2.2, y = 1.8, label = "n=12") +
+  labs(y = "metagenome (% sequences)", x = "net (% biomass)")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  guides(colour=FALSE) +
+  #theme(legend.position="none") +
+  theme(panel.grid.major = element_blank())   # remove grids
+
+##########
+# big filt
+datp<- dat_genome2_bio2 %>%   #   names(dat_genome2_bio2)
+    mutate(Taxa= biomass_taxa, ind = log((net_biomass*100)+1) , resp=log((metagenome_ec3_PID_70*100)+1), fac_col=factor(paste(Station.x,Depth))) %>%
+    filter(filter_size=="0.8.20"  | filter_size=="3.20")    # unique(datp$filter_size)
+mes<-datp %>% 
+    filter(!duplicated(fac_col))
+
+cor1 <- (cor(datp$ind,datp$resp))^2
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30',"black", "red")
+
+p_gen_bio_filt_big<-ggplot(datp, aes(x = ind, y = resp)) +
+  geom_point(aes(x = ind, y = resp, colour=fac_col, shape=Taxa), size = 2) +
+  scale_y_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +  #, limits = c(0, NA), ,  expand = c(0,0)
+  scale_x_continuous(minor_breaks=NULL, limits = lim,breaks=ax_br, labels= ax_lab) +
+  scale_color_manual(values=cc1) +
+  scale_shape(solid=FALSE) +
+  stat_smooth(method = "lm", col = "black", se = FALSE) +
+  annotate("text", x = 2.7, y = 2.8, parse = TRUE, label = as.character(expression(r^{2}*"=0.82"))) +
+    annotate("text", x = 2.7, y = 2.4, label = "n=8") +
+  labs(y = "metagenome (% sequences)", x = "net (% biomass)")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  guides(colour=FALSE) +
+  #theme(legend.position="none") +
+  theme(panel.grid.major = element_blank())   # remove grids
+
+
+####################################################
+# put together
+#ggpubr::ggarrange(p_18s_abund, p_18s_bio, p_gen_ab_filt_small, p_gen_bio_filt_small, p_gen_ab_filt_big, p_gen_bio_filt_big  , ncol=2, nrow=3, labels="auto")
+
+# 4  ###################
+a<-ggpubr::ggarrange(p_gen_ab_filt_small, p_gen_bio_filt_small, p_gen_ab_filt_big, p_gen_bio_filt_big  , ncol=2, nrow=2, labels=list("A","B","C","D"), font.label = list(face="plain", size=10)  )
+#  export
+#  ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/comparison_2019/net_gen_ec3_correlations.pdf", plot = a , width=8 , height=5, units=c("in"))
+
+# genome small  ###################
+small<-ggpubr::ggarrange(p_gen_ab_filt_small, p_gen_bio_filt_small, ncol=2, nrow=1, labels=list("A","B"), font.label = list(face="plain", size=10)  )
+#  export
+ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/comparison_2019/net_gen_small_sf_correlations.pdf", plot = small, width=20 , height=7, units=c("cm"))
+
+# genome big  ###################
+big<-ggpubr::ggarrange(p_gen_ab_filt_big, p_gen_bio_filt_big  , ncol=1, nrow=2, labels=list("A","B"), font.label = list(face="plain", size=10)  )
+#  export
+#  ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/comparison_2019/net_gen_large_sf_correlations.pdf", plot = big , width=5.5 , height=8, units=c("in"))
+
+
+```
+
