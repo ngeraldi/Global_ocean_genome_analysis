@@ -1,0 +1,295 @@
+---
+title: "biomass_compare"
+author: "Nathan R. Geraldi"
+date: "April 6, 2019"
+output: github_document
+---
+
+set table options
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## libraries
+```{r libraries, message=FALSE, warning=FALSE}
+library(tidyverse) 
+library(vegan) 
+library(mvabund) 
+#library(merTools)
+
+#  install.packages("devtools")
+#  devtools::install_github("grunwaldlab/metacoder")
+
+```
+
+## functions
+```{r functions, message=FALSE, warning=FALSE}
+# function to remove rows with n number of NA's
+delete.na <- function(DF, n=0) {
+  DF[rowSums(is.na(DF)) <= n,]
+}
+
+# Specify alpha as a percentage:
+colorRampAlpha <- function(..., n, alpha) {
+   colors <- colorRampPalette(...)(n)
+   paste(colors, sprintf("%x", ceiling(255*alpha)), sep="")
+}
+
+```
+
+
+## define universal variables
+```{r define_universal}
+stud_pat<-"Dammam"  # matches study specific title from pipe (begining of files).
+dir<-"/Users/geraldn/Dropbox/"
+out_file<-"Documents/KAUST/eDNA/R/pipe_summary"
+# export  to project folder
+export_file<-"Documents/KAUST/eDNA/R/csv/"
+
+```
+
+## import geo
+```{r taxa_table}
+# get ocean data  - used in "tidy 18s"
+geo<-read.table("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/Global_layers_genome.csv", sep=",",header=T)
+#  names(geo)
+geo2<- geo %>% 
+  dplyr::select(Latitude:ocean) %>% 
+  distinct(Latitude,Latitude, .keep_all = T)
+  
+  
+```
+
+
+## metagenome
+```{r metagenome}
+
+# genome data from DMAP        
+dat_genome<-data.table::fread(file = '/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/DMAP_biomass_apr19.csv', sep = ',', header = TRUE)
+##   add column differentiat malaspina profile and deep
+dat_genome1<- dat_genome %>%   # names(dat_genome)      
+  mutate(pid=forcats::fct_recode(pid, "PID_50" ="pid50","PID_70" ="pid70","PID_90" ="pid90" )) %>% 
+  mutate(Depth = ifelse(Cruise == "TARA", Depth.env, Depth)) %>% 
+  group_by_at(vars(unique_ID:pid, Latitude,Longitude,Depth,phylum)) %>% # was sp_num in stats_source
+  summarize(reads=sum(reads)) %>% 
+  ungroup() %>% 
+  group_by_at(vars(unique_ID:pid)) %>% 
+  mutate(reads_sample=sum(reads)) %>% 
+  ungroup() %>% 
+  mutate(reads_percent=reads/reads_sample) %>% 
+  mutate(reads_percent=reads_percent*100) %>%
+  dplyr::rename(Phylum=phylum) 
+  # unique(dat_genome1$pid)
+  ## get oceans, but need to remove some samples without lat/lon
+ dat_genome_na<- dat_genome1 %>% # remove then bind back in after join-erro with na's
+    filter(is.na(Latitude))
+
+ dat_genome2<- dat_genome1 %>% # names(dat_genome2)
+    filter(complete.cases(Latitude)) %>% 
+    fuzzyjoin::geo_left_join(geo2, max_dist = 0.1)  %>% #  to get oceans, dist in miles
+    dplyr::select(-Latitude.y,  -Longitude.y) %>% 
+    dplyr::rename(Latitude=Latitude.x , Longitude=Longitude.x)  %>% 
+    mutate(ocean=as.character(ocean)) %>%  #  unique(dat_genome2$ocean)
+    mutate(ocean=replace(ocean, ocean=="Antarctic","Southern Ocean")) %>% 
+    mutate(Latitude_abs=abs(Latitude)) %>% 
+    mutate(Latitude_cat=cut(Latitude_abs, breaks=c(-Inf,23.5,35, Inf), 
+                        labels=c("Tropical","Subtropical","Temperate"))) %>% 
+   #bind_rows(dat_genome_na) %>% 
+   # remove NaN- only for samples with no hits
+   filter(!reads_percent=="NaN") 
+
+ #########
+  #       get filter catagories
+filcat<-data.frame(unique(dat_genome2$filter_size))
+colnames(filcat)[1] <- "filter_size"
+filcat$filter_size_cat<-c("0.2-3","1-20","1-20","0.2-3","0.2-3","1-20","0.1-0.22","0.2-3","0.2-3","0.2-3")
+dat_genome2<-left_join(dat_genome2, filcat, by="filter_size")   #  unique(dat_genome2$filter_size_cat)
+##  get depth catagories
+dat_genome2$Depth_cat <- cut(dat_genome2$Depth, breaks=c(-Inf,11, 200, 1000, 2000, 3910, Inf), 
+                      labels=c("<10m","10-200m","200-1000m","1000-2000m","2000-3910m","3995-4020m"))
+##
+## limit to "good data"
+dat_genome3<- dat_genome2 %>%   # names(dat_genome2)
+  filter(gene_domain=="ec4")  %>%   # unique(dat_genome2$gene_domain)
+   # limit to target DMAP filter
+  filter(pid=="PID_70") %>%  # 
+    ###
+    filter(filter_size_cat=="0.2-3" ) %>% 
+  ## spread   !!!!!! reads or percent need to choose !!!!!
+  #dplyr::select(-reads) %>% 
+  #spread(key=Phylum, value=reads_percent) 
+
+dplyr::select(-reads_percent) %>% 
+  spread(key=Phylum, value=reads) 
+  
+  
+dat_genome3<-data.frame(dat_genome3)
+
+
+
+```
+
+
+## tidy
+```{r tidy}
+sdat<-dat_genome3
+
+sdat$sDepth<-scale(sdat$Depth)
+sdat$sLand_Dist<-scale(sdat$land_dist)
+sdat$sLatitude<-scale(sdat$Latitude)
+sdat$sLatitude_abs<-scale(sdat$Latitude_abs)
+sdat$sPresent.Surface.Temperature.Mean<-scale(sdat$Present.Surface.Temperature.Mean)
+sdat$sPresent.Surface.Temperature.Range<-scale(sdat$Present.Surface.Temperature.Range)
+sdat$sPresent.Surface.Primary.productivity.Mean<-scale(sdat$Present.Surface.Primary.productivity.Mean)
+sdat$sPresent.Surface.Primary.productivity.Range<-scale(sdat$Present.Surface.Primary.productivity.Range)
+sdat$sPop_in_100km.Mean<-scale(sdat$Pop_in_100km)
+sdat$sPop_in_1000km<-scale(sdat$Pop_in_1000km)
+sdat$sOHI_2013<-scale(sdat$OHI_2013)
+
+attributes(sdat$sDepth) <- NULL
+attributes(sdat$sLand_Dist) <- NULL
+attributes(sdat$sLatitude) <- NULL
+attributes(sdat$sLatitude_abs) <- NULL
+attributes(sdat$sPresent.Surface.Temperature.Mean) <- NULL
+attributes(sdat$sPresent.Surface.Temperature.Range) <- NULL
+attributes(sdat$sPresent.Surface.Primary.productivity.Mean) <- NULL
+attributes(sdat$sPresent.Surface.Primary.productivity.Range) <- NULL
+attributes(sdat$sOHI_2013) <- NULL
+
+deep <-sdat %>% 
+  filter(Cruise=="Malaspina" & area=="deep") 
+prof <-sdat %>% 
+  filter(Cruise=="Malaspina" & area=="prof")
+TARA <-sdat %>% 
+  filter(Cruise=="TARA" )
+
+```
+
+
+## manyglm
+```{r manyglm}
+
+####   deep
+dat<-deep  # names(deep)
+
+cc<-dat %>% 
+  dplyr::select(Annelida:Tardigrada) %>% 
+  mutate_all(as.numeric) %>% 
+  mutate_all(ceiling)
+
+  cc<-cc[,which(colSums(cc)!=0)] # hist(as.matrix(cc))    hist(as.matrix(log(1+cc)))
+  
+varl<-dat %>% 
+  select(unique_ID:Depth_cat,sDepth:sOHI_2013)
+
+abv<-mvabund(cc)
+
+mod <- manyglm(abv~(sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+    sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+    sPresent.Surface.Primary.productivity.Range+sOHI_2013)^2 ,
+              data=varl, family="negative.binomial",nboot=1000, cor.type="shrink",show.cor=TRUE, nCore=4)
+
+mod <- manyglm(abv~sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+    sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+    sPresent.Surface.Primary.productivity.Range+sOHI_2013 
+    
+    ,data=varl, family="negative.binomial",nboot=1000, cor.type="shrink",show.cor=TRUE, nCore=4)
+
+
+plot(mod)
+ ####
+stat<-anova(mod, resamp="pit.trap",nBoot=1000,cor.type="shrink",p.uni="adjusted")##
+stat
+ss<-summary(mod, resamp="pit.trap",nboot=1000,cor.type="R",show.cor=TRUE, nCore=4)
+ss
+
+p<-stat$uni.p
+w<-stat$uni.test
+est<-ss$est
+
+
+
+####   profile
+dat<-prof  # names(deep)
+
+cc<-dat %>% 
+  dplyr::select(Annelida:Tardigrada) %>% 
+  mutate_all(as.numeric) %>% 
+  mutate_all(ceiling)
+
+  cc<-cc[,which(colSums(cc)!=0)] # hist(as.matrix(cc))    hist(as.matrix(log(1+cc)))
+  
+varl<-dat %>% 
+  select(unique_ID:Depth_cat,sDepth:sOHI_2013)
+
+abv<-mvabund(cc)
+
+mod <- manyglm(abv~(sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+    sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+    sPresent.Surface.Primary.productivity.Range+sOHI_2013)^2, 
+              data=varl, family="negative.binomial",nboot=1000, cor.type="shrink",show.cor=TRUE, nCore=4)
+
+
+mod <- manyglm(abv~sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+    sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+    sPresent.Surface.Primary.productivity.Range+sOHI_2013+
+    sLand_Dist:sPresent.Surface.Temperature.Mean+
+    sLand_Dist:sPresent.Surface.Temperature.Range
+    
+    ,data=varl, family="negative.binomial",nboot=1000, cor.type="shrink",show.cor=TRUE, nCore=4)
+
+ ####
+stat<-anova(mod, resamp="pit.trap",nBoot=1000,cor.type="shrink",p.uni="adjusted")##
+stat
+ss<-summary(mod, resamp="pit.trap",nboot=1000,cor.type="R",show.cor=TRUE, nCore=4)
+ss
+
+p<-stat$uni.p
+w<-stat$uni.test
+est<-ss$est
+
+#  mmod <- manyany("manyglm",data=varl,abv~sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean,family="tweedie")
+
+####   TARA
+dat<-TARA  # names(deep)
+
+cc<-dat %>% 
+  dplyr::select(Annelida:Tardigrada) %>% 
+  mutate_all(as.numeric) %>% 
+  mutate_all(ceiling)
+
+  cc<-cc[,which(colSums(cc)!=0)] # hist(as.matrix(cc))    hist(as.matrix(log(1+cc)))
+  
+varl<-dat %>% 
+  select(unique_ID:Depth_cat,sDepth:sOHI_2013)
+
+abv<-mvabund(cc)
+
+mod <- manyglm(abv~(sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+    sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+    sPresent.Surface.Primary.productivity.Range+sOHI_2013)^2, 
+              data=varl, family="negative.binomial",nboot=1000, cor.type="shrink",show.cor=TRUE, nCore=4)
+
+mod <- manyglm(abv~sDepth+sLand_Dist+sPresent.Surface.Temperature.Mean+
+    sPresent.Surface.Temperature.Range+sPresent.Surface.Primary.productivity.Mean+
+    sPresent.Surface.Primary.productivity.Range+sOHI_2013 +
+    sDepth:sPresent.Surface.Temperature.Range +
+    sLand_Dist:sPresent.Surface.Primary.productivity.Range 
+    , 
+              data=varl, family="negative.binomial",nboot=1000, cor.type="shrink",show.cor=TRUE, nCore=4)
+
+ ####
+stat<-anova(mod, resamp="pit.trap",nBoot=1000,cor.type="shrink",p.uni="adjusted")##
+stat
+
+ss<-summary(mod, resamp="pit.trap",nboot=1000,cor.type="R",show.cor=TRUE, nCore=4)
+ss
+
+p<-stat$uni.p
+w<-stat$uni.test
+est<-ss$est
+
+plot.manyglm(mod)
+```
+
+

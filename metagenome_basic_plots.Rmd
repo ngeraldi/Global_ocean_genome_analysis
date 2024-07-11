@@ -1,0 +1,244 @@
+---
+title: "biomass_compare"
+author: "Nathan R. Geraldi"
+date: "April 6, 2019"
+output: github_document
+---
+
+set table options
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## libraries
+```{r libraries, message=FALSE, warning=FALSE}
+library(RColorBrewer)
+library(tidyverse) 
+library(broom)
+#library(edgeR)
+
+#  install.packages("devtools")
+#  devtools::install_github("grunwaldlab/metacoder")
+
+```
+
+## functions
+```{r functions, message=FALSE, warning=FALSE}
+# function to remove rows with n number of NA's
+delete.na <- function(DF, n=0) {
+  DF[rowSums(is.na(DF)) <= n,]
+}
+
+```
+
+
+## define universal variables
+
+```{r define_universal}
+stud_pat<-"Dammam"  # matches study specific title from pipe (begining of files).
+dir<-"/Users/geraldn/Dropbox/"
+out_file<-"Documents/KAUST/eDNA/R/pipe_summary"
+# export  to project folder
+export_file<-"Documents/KAUST/eDNA/R/csv/"
+
+```
+
+
+## import
+```{r import}
+# richness of domains and DMAP richness
+dmap_rich<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/metaz manuscript/DMAP_info_Apr19.xlsx", sheet=2)
+uniprotkb_rich<-openxlsx::read.xlsx(xlsxFile="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/metaz manuscript/DMAP_info_Apr19.xlsx", sheet=1, cols = c(1:6))
+
+# genome data from DMAP
+dat<-data.table::fread(file = '/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/CSV/DMAP_biomass_apr19.csv', sep = ',', header = TRUE)
+##   add column differentiat malaspina profile and deep
+dat<- dat %>% 
+  mutate(cruise_area="Tara") %>% 
+  mutate(cruise_area=if_else(area=="prof", "Malaspina profiles", cruise_area)) %>% 
+  mutate(cruise_area=if_else(area=="deep", "Malaspina deep", cruise_area)) %>% 
+  mutate(cruise_area=factor(cruise_area, levels=c("Tara","Malaspina profiles","Malaspina deep"))) %>% 
+  mutate(pid=forcats::fct_recode(pid, "PID 50" ="pid50","PID 70" ="pid70","PID 90" ="pid90" ))
+
+#  names(dat)   unique(dat$cruise_area)
+
+```
+
+
+## tidy
+
+```{r tidy}
+#  sum by phylum by sample and pid
+dat1<-dat %>% 
+  # get percents by samples
+  group_by_at(vars(ID.x:pid)) %>% 
+  mutate(seq_per_sample=sum(reads)) %>% 
+  ungroup()  %>% 
+  mutate(percent_reads=reads/seq_per_sample)
+
+  #       get filter catagories
+filcat<-data.frame(unique(dat1$filter_size))
+colnames(filcat)[1] <- "filter_size"
+filcat$filter_size_cat<-c("","0.2-3","0.2-3","0.2-3","0.1-0.22","0.2-3","0.2-3","1-20","","1-20","0.2-3")
+dat1<-left_join(dat1, filcat, by="filter_size")   # 
+
+  # aggregate sequences for phyla
+dat_phyl <- dat1 %>% 
+  select_at(vars(ID.x:pid,cruise_area,filter_size_cat,phylum,percent_reads)) %>% 
+  group_by_at(vars(ID.x:pid,filter_size_cat,cruise_area,phylum)) %>% 
+  summarize(percent_reads=sum(percent_reads)) %>% 
+  mutate(percent_reads=replace(percent_reads, is.na(percent_reads), 0)) # replace NA with 0
+
+# get order of phyla most to least
+dat_phyl_10 <-dat_phyl %>% 
+  group_by(phylum) %>% 
+  summarize(m=mean(percent_reads),sum=sum(percent_reads)) %>% 
+  arrange(desc(m)) %>% 
+  top_n(10) %>% 
+  pull(phylum)  
+
+# mes     unique(mes$ID.x)        names(dat1)
+  mes<-dat %>% 
+  group_by_at(vars(ID.x:pid)) %>% 
+  summarize(seq_per_sample=sum(reads))
+ 
+   
+# look at most abundant species   names(dat1)
+  sss<-sum(dat1$reads)
+dat_sp <- dat1 %>% 
+  filter(phylum %in% dat_phyl_10) %>% 
+  filter(filter_size_cat=="0.2-3") %>%  #   !!!! limit to small filter  !!!!!!!!!!
+  filter(gene_domain=="ec4") %>%  # unique(dat1$gene_domain)   "ec4" "pf7"   "ec3"
+  filter(pid=="PID 70") %>% 
+  group_by_at(vars(phylum,class, order,species.ncbi_fix)) %>% 
+  summarize(seq=sum(reads)) %>% 
+  group_by(phylum) %>%
+  #top_n(n = 3, wt = seq) %>% 
+  arrange(phylum,-seq) 
+  
+#  save
+setwd("/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/metaz manuscript")
+# write.table(dat_sp,"DMAP_species_summary2.csv", sep=",",row.names=F) ## added all to this csv Sept 2019
+
+```
+
+
+## genome barplots
+
+```{r barplot}
+
+cc1<-c('#543005','#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e','#003c30')
+space<-c(1:10) #
+cc1<-cc1[1:length(space)]
+yylim<-c(1,100)
+
+############################################################
+
+#########   ggplot 
+datp<-dat_phyl %>%   # unique(sum1$fac)  names(dat_phyl)
+  filter(phylum %in% dat_phyl_10) %>%   # limit to top ten phyla
+  mutate(phylum=factor(phylum, levels=dat_phyl_10)) %>% 
+  mutate(fac=cruise_area , fac1= pid, ind = phylum , resp=percent_reads) %>% 
+  filter(filter_size_cat=="0.2-3") %>%  #   !!!! limit to small filter  !!!!!!!!!!
+  filter(gene_domain=="pf7") # unique(dat1$gene_domain)   "ec4" "pf7"   "ec3"
+  
+unique(datp$cruise_area)
+
+p<-ggplot(datp, aes(x = ind, y = resp)) +
+  geom_boxplot(aes(x = ind, y = resp, colour=ind), size = 0.6) +
+  stat_summary(fun.y=mean, geom="point", shape=1, size=2) +
+  # between facets
+  facet_grid(fac1~fac, space = "fixed", scales="free") +  # , scales = "fixed"
+  theme(strip.text.x = element_text(angle = 45))  + 
+  scale_y_continuous(minor_breaks=NULL,  expand = c(0,0)) +  #, limits = c(0, NA)
+  scale_color_manual(values=cc1) +
+  #scale_shape(solid=FALSE) +
+  labs(y = "Percent sequences", x = "Phyla")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) + # 
+  theme(legend.position="none") +
+  theme(panel.grid.major = element_blank())  + # remove grids
+  theme(panel.spacing = unit(0.8, "lines"))  # increase margins
+  #annotate("segment", x=-Inf, xend=Inf, y=-Inf, yend=-Inf) +  
+  #annotate("segment", x=-Inf, xend=-Inf, y=-Inf, yend=Inf)
+
+#  export
+ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/comparison_2019/DMAP_boxplot_pf7_9plot_filt_0.2-3.pdf", plot = p)
+
+
+
+```
+
+
+
+
+
+## DMAP richness
+
+```{r DMAP_richness}
+#  use  dmap_rich  uniprotkb_rich
+names(dmap_rich)
+
+
+##  plot DMAP richness
+datp<-dmap_rich %>%   # unique(sum1$fac)  names(dat_phyl)
+  select(-Total) %>% 
+  dplyr::rename("Malaspina_deep"= "MalaspinaDeepMgmS80","Malaspina_profiles"="MprofMgmS80","Tara"="TARA_GC") %>%
+  gather(key= "cruise_area" , value="richness", Tara, Malaspina_profiles, Malaspina_deep) %>% 
+  mutate(cruise_area=factor(cruise_area, levels=c("Tara","Malaspina_profiles","Malaspina_deep"))) %>% 
+  separate(Category, into=c("phylum", "taxaID"), sep =" ", remove = TRUE) %>% 
+  select(-taxaID) %>% 
+  #mutate(phylum=factor(phylum, levels=dat_phyl_10)) %>% 
+  mutate(fac=cruise_area , PID= factor(pid), ind = phylum , resp=richness) 
+
+p<-ggplot(datp, aes(x = ind, y = resp)) +
+  geom_bar(stat = "identity", aes(fill = PID)) +
+  facet_grid(domain~fac, space = "fixed", scales="free") +  # , scales = "fixed"
+  theme(strip.text.x = element_text(angle = 45))  + 
+  scale_y_continuous(minor_breaks=NULL,  expand = c(0,0)) +  #, limits = c(0, NA)
+  labs(y = "Richness", x = "Phyla")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) + # rotate phyla labels
+  theme(panel.grid.major = element_blank())  + # remove grids
+  theme(panel.spacing = unit(0.8, "lines"))  # increase margins
+
+#  export
+ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/comparison_2019/DMAP_barplot_cusise_richness_9plot.pdf", plot = last_plot())
+```
+
+
+## seq_unipotkb 
+```{r seq_unipotkb}
+datp<-uniprotkb_rich %>%   # names(uniprotkb_rich)
+  gather(key= "domain" , value="Sequences", pf7, ec4, ec3) %>% 
+  mutate(fac = factor(domain), ind = sub_catagories , resp=Sequences) 
+
+bb<-c(1,10,50,500,2000,10000)
+
+  ggplot(datp, aes(x = ind, y = resp)) +
+  geom_bar(stat = "identity") +
+  facet_grid(~fac, space = "fixed", scales="free") +  # , scales = "fixed"
+  theme(strip.text.x = element_text(angle = 45))  + 
+  scale_y_continuous(minor_breaks=NULL, trans="log", expand = expand_scale(mult = c(0, .1)), breaks = bb, labels = bb) +  #, limits = c(0, NA)
+  scale_fill_manual(values=cc1[1:9]) +
+  labs(y = "Reference sequences", x = "Phyla and sub catagories")  +
+  theme_bw()  + # classic -no grids or bw or minimal
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +
+  theme(panel.grid.major = element_blank())  + # remove grids
+  theme(panel.spacing = unit(0.8, "lines"))  # increase margins
+
+#  export
+ggsave(filename="/Users/geraldn/Dropbox/Documents/KAUST/eDNA/DMAP/R/plots/comparison_2019/DMAP_barplot_uniprot_seqs_9plot.pdf", plot = last_plot())
+
+```
+
+
+## Join
+
+```{r join}
+
+
+
+```
+
+
